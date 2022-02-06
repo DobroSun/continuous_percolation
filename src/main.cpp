@@ -569,19 +569,19 @@ int main(int argc, char** argv) {
     memcpy(circles_array.data, positions, sizeof(positions));
   }
 
-	if (!glfwInit()) {
+  if (!glfwInit()) {
     puts("[..] failed glfwInit()");
     return 1;
   }
 
-	GLFWwindow* window = glfwCreateWindow(640, 480, "The World", NULL, NULL);
-	if (!window) {
+  GLFWwindow* window = glfwCreateWindow(640, 480, "The World", NULL, NULL);
+  if (!window) {
     puts("[..] failed glfwCreateWindow()");
     glfwTerminate();
     return 1;
-	}
+  }
 
-	glfwMakeContextCurrent(window); // make opengl context.
+  glfwMakeContextCurrent(window); // make opengl context.
   glfwSwapInterval(1);            // synchronizes our frame rate with vsync (60 fps)
 
   if (glewInit() != GLEW_OK) {
@@ -664,7 +664,7 @@ int main(int argc, char** argv) {
   float r = 0.0f;
   float increment = 0.05f;
 
-	while (!glfwWindowShouldClose(window)) {
+  while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
     for (size_t i = 0; i < circles_array.size; i++) {
@@ -693,9 +693,9 @@ int main(int argc, char** argv) {
 
     glfwSwapBuffers(window);
     glfwPollEvents();
-	}
+  }
 
-	glfwTerminate();
-	return 0;
+  glfwTerminate();
+  return 0;
 }
 
