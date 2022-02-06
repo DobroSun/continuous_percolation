@@ -44,9 +44,16 @@ T* array_add(dynamic_array<T>* a) {
   return &a->data[a->size++];
 }
 
-template<class T>
-T* array_add(dynamic_array<T>* a, T v) {
+template<class T, class U>
+T* array_add(dynamic_array<T>* a, U v) {
   return &(*array_add(a) = v);
+}
+
+template<class T>
+T array_remove(dynamic_array<T>* a, size_t index) {
+  T element = (*a)[index];
+  a->data[index] = a->data[--a->size];
+  return element;
 }
 
 template<class T, class F>

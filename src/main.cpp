@@ -192,7 +192,7 @@ struct Graph {
   uint    count;
 
   uint16* connected_nodes_count;
-  uint**  connected_nodes; // @Incomplete: if we ever need we can make this to take less space, instead of using pointers we can go with just uints.
+  uint**  connected_nodes; // @Incomplete: if we ever need we can make this use less space, instead of using pointers we can go with just uints.
 
   // for graph creation.
   uint*   graph_data;
@@ -273,24 +273,38 @@ Vec2 generate_random_vec2(float radius) {
   return Vec2 { x, y };
 }
 
-Vec2 generate_random_vec2_around_a_point(Vec2 point, float min_radius, float max_radius) {
-  auto angle = rand();
-  auto dist  = rand();
+Vec2 generate_random_vec2_around_a_point(Vec2 point, float radius, float min_radius, float max_radius) {
+  size_t angle, dist;
+  double phi, ro;
+  float  x, y;
 
-  double phi = TAU * angle / (double)(RAND_MAX+1);
-  double ro  = (max_radius - min_radius) * dist / (double)RAND_MAX + min_radius;
+regenerate: 
+  angle = rand();
+  dist  = rand();
+
+  phi = TAU * angle / (double)(RAND_MAX+1);
+  ro  = (max_radius - min_radius) * dist / (double)(RAND_MAX+1) + min_radius;
 
   assert(0          <= phi && phi <= TAU);
   assert(min_radius <= ro  && ro  <= max_radius);
 
-  float x = point.x + ro*cos(phi);
-  float y = point.y + ro*sin(phi);
-  // @Incomplete: assert on [-1.0f, 1.0f] boundaries.
+  x = point.x + ro*cos(phi);
+  y = point.y + ro*sin(phi);
 
+  // @Incomplete: assert on [-1.0f, 1.0f] boundaries.
+  // @Hack: 
+  if (!(-1.0f <= x-radius && x+radius <= 1.0f) || 
+      !(-1.0f <= y-radius && y+radius <= 1.0f)) {
+    goto regenerate;
+  }
+
+  assert(-1.0f <= x-radius && x+radius <= 1.0f);
+  assert(-1.0f <= y-radius && y+radius <= 1.0f);
+  
   return Vec2 { x, y };
 }
 
-void naive_generate_random_points(Vec2* array, size_t N, float radius) {
+void naive_generate_random_points(dynamic_array<Vec2>* array, size_t N, float radius) {
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
 
   for (size_t i = 0; i < N; i++) {
@@ -301,8 +315,8 @@ void naive_generate_random_points(Vec2* array, size_t N, float radius) {
 
     possible_point  = generate_random_vec2(radius);
     allow_new_point = true;
-    for (size_t j = 0; j < i; j++) {
-      Vec2 already_a_point = array[j];
+    for (size_t j = 0; j < array->size; j++) {
+      Vec2 already_a_point = (*array)[j];
 
       float distance = distance_squared(possible_point, already_a_point);
       if (distance < min_distance_between_nodes) {
@@ -312,36 +326,38 @@ void naive_generate_random_points(Vec2* array, size_t N, float radius) {
     }
 
     if (allow_new_point) {
-      array[i] = possible_point;
+      array_add(array, possible_point);
       continue;
     } else {
       goto regenerate;
     }
   }
-
 }
 
-void poisson_disk_random_points(Vec2* array, size_t N, float radius) {
-  const float min_distance_between_nodes = (2 * radius) * (2 * radius);
+void poisson_disk_random_points(dynamic_array<Vec2>* array, size_t N, float radius) {
+  const float min_radius = 2 * radius;
+  const float min_distance_between_nodes = min_radius * min_radius;
 
   dynamic_array<Vec2> active_points;
+  defer { array_free(&active_points); };
+
+  array_reserve(&active_points, N);
+  array_add    (&active_points, generate_random_vec2(radius));
+
   size_t cursor = 0;
-
-  Vec2 initial_point = generate_random_vec2(radius);
-
-  array_add(&active_points, initial_point);
-
   const size_t NUMBER_OF_SAMPLES_TO_USE = 30;
 
-  while (cursor != N) {
-    Vec2 active_point = active_points[cursor];
+  while (active_points.size) {
+    size_t index = rand() % active_points.size;
+    Vec2 active_point = active_points[index];
 
+    bool found_something = false;
     for (size_t i = 0; i < NUMBER_OF_SAMPLES_TO_USE; i++) {
-      Vec2 possible_point = generate_random_vec2_around_a_point(active_point, 2*radius, 3*radius);
+      Vec2 possible_point = generate_random_vec2_around_a_point(active_point, radius, min_radius, min_radius);
 
       bool allow_new_point = true;
-      for (size_t j = 0; j < cursor; j++) {
-        Vec2 already_a_point = array[j];
+      for (size_t j = 0; j < array->size; j++) {
+        Vec2 already_a_point = (*array)[j];
 
         float distance = distance_squared(possible_point, already_a_point);
         if (distance < min_distance_between_nodes) {
@@ -351,9 +367,16 @@ void poisson_disk_random_points(Vec2* array, size_t N, float radius) {
       }
 
       if (allow_new_point) {
-        array[cursor++] = possible_point;
+        cursor++;
+        array_add(array,          possible_point);
         array_add(&active_points, possible_point);
+        found_something = true;
+        break;
       }
+    }
+
+    if (!found_something) {
+      array_remove(&active_points, index);
     }
   }
 }
@@ -381,13 +404,12 @@ void naive_collect_points_to_graph(Graph* graph, Vec2* array, float radius, floa
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, size_t index, dynamic_array<uint>* cluster_sizes) {
+void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, size_t starting_index, dynamic_array<uint>* cluster_sizes) {
   // add i-th node.
-  hash_table[index] = true;
-  add_to_queue(queue, index);
+  hash_table[starting_index] = true;
+  add_to_queue(queue, starting_index);
 
-  uint* size = array_add(cluster_sizes);
-  *size = 1;
+  uint* size = array_add(cluster_sizes, 1);
 
   while (!is_queue_empty(queue)) {
     uint node_id = get_from_queue(queue);
@@ -468,44 +490,41 @@ int main(int argc, char** argv) {
   init_filesystem_api();
 
   const size_t N = 100;
+  const float radius = 0.0797885; // sqrt(proportion * max_window_area / (float)N / PI); // @Incomplete: this should be input to an algorithm.
+  const float L = radius + 0.1f;
 
-  float circle_radius;
   dynamic_array<Vec2> circles_array;
-  array_resize(&circles_array, N);
-
   defer { array_free(&circles_array); };
 
   { // do_stuff() 
     uint seed = time(NULL);
     srand(seed);
 
-    const float proportion = 0.5f;
-    const float max_window_area = (1 - -1) * (1 - -1);                 // @Incomplete: this should be input to an algorithm.
-    float radius = sqrt(proportion * max_window_area / (float)N / PI); // @Incomplete: this should be input to an algorithm.
-    float L = radius + 0.1f;
-
-    float one_circle_area  = PI * radius * radius;
-    float max_circles_area = one_circle_area * N;
-
-
-    printf("radius := %g\n", radius);
-    printf("proportion := %g\n", proportion);
-    printf("areas: circles := %g, window := %g\n", max_circles_area, max_window_area);
-
-    assert(fabs(max_circles_area/(float)max_window_area - proportion) <= 1e-5);
-    assert(max_circles_area < max_window_area);
-    assert(N < UINT_MAX);                       // because we are using uints to address graph nodes, N is required to be less than that.
-    assert(proportion <= PI * sqrt(3) / 6.0);   // packing factor must be less than 0.9069...
-    assert(L <= 2.0f);                          // @Hardcoded: assert it is not out of bounds 
 
     printf("[..] Generating nodes ... \n");
 
-    Vec2 positions[N];
+    dynamic_array<Vec2> positions;
+    array_reserve(&positions, N);
+
     //naive_generate_random_points(positions, N, radius);
-    poisson_disk_random_points(positions, N, radius);
+    poisson_disk_random_points(&positions, N, radius);
+    assert(check_nodes_do_not_intersect_each_other(positions.data, N, radius));
 
-    assert(check_nodes_do_not_intersect_each_other(positions, N, radius));
+    const double max_window_area  = 2.0f * 2.0f;
+    const double max_circles_area = positions.size * PI * radius * radius;
+    const double packing_factor   = max_circles_area / max_window_area;
 
+    printf("[..] Radius of a circle := %g\n", radius);
+    printf("[..] Circles area       := %g\n", max_circles_area);
+    printf("[..] Window  area       := %g\n", max_window_area);
+    printf("[..] Generated          := %lu points!\n", positions.size);
+    printf("[..] Resulting packing factor := %g\n", packing_factor);
+
+    assert(max_circles_area < max_window_area);
+    assert(N < UINT_MAX);                         // because we are using uints to address graph nodes, N is required to be less than that.
+    assert(packing_factor <= PI * sqrt(3) / 6.0); // packing factor must be less than 0.9069...
+
+    printf("[..]\n");
 
     const size_t a_lot = 1e10; // ~ 10 gigabytes.
     char* memory = (char*) malloc(a_lot);
@@ -523,8 +542,9 @@ int main(int argc, char** argv) {
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
     memset(graph.connected_nodes,       0, sizeof(uint*)  * N);
 
-    naive_collect_points_to_graph(&graph, positions, radius, L);
+    naive_collect_points_to_graph(&graph, positions.data, radius, L);
 
+    printf("[..]\n");
     printf("[..] Starting BFS ... \n");
 
     dynamic_array<uint> cluster_sizes;
@@ -547,8 +567,8 @@ int main(int argc, char** argv) {
 
     assert(check_hash_table_is_correct(hash_table, N));
 
-    printf("Number of clusters := %lu\n", cluster_sizes.size);
-    printf("Cluster sizes := [");
+    printf("[..] Number of clusters := %lu\n", cluster_sizes.size);
+    printf("[..] Cluster sizes := [");
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
     }
@@ -560,13 +580,12 @@ int main(int argc, char** argv) {
     }
 
     assert(max_cluster);
-    printf("Percolating cluster size := %lu\n", max_cluster);
+    printf("[..] Percolating cluster size := %lu\n", max_cluster);
     puts("");
     puts("");
     puts("");
 
-    circle_radius = radius;
-    memcpy(circles_array.data, positions, sizeof(positions));
+    circles_array = positions;
   }
 
   if (!glfwInit()) {
@@ -574,7 +593,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  GLFWwindow* window = glfwCreateWindow(640, 480, "The World", NULL, NULL);
+  GLFWwindow* window = glfwCreateWindow(640, 640, "The World", NULL, NULL);
   if (!window) {
     puts("[..] failed glfwCreateWindow()");
     glfwTerminate();
@@ -657,8 +676,7 @@ int main(int argc, char** argv) {
   assert(uniform_color != -1);
   assert(uniform_mvp   != -1);
 
-
-  glm::mat4 projection = glm::ortho(-2.0f, 2.0f, -1.5f, 1.5f, -1.0f, 1.0f);
+  glm::mat4 projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
   glm::mat4 model      = glm::mat4(1);
 
   float r = 0.0f;
@@ -673,13 +691,13 @@ int main(int argc, char** argv) {
 
       glm::mat4 model = glm::mat4(1);
       model = glm::translate(model, glm::vec3(x, y, 0));
-      model = glm::scale(model, glm::vec3(circle_radius, circle_radius, 0));
+      model = glm::scale(model, glm::vec3(radius, radius, 0));
 
-      glm::mat4 mvp = model * projection;
+      glm::mat4 mvp = projection * model;
 
       glUniform4f       (uniform_color, r, 0.3f, 0.8f, 1.0f);
       glUniformMatrix4fv(uniform_mvp,   1, GL_FALSE, (float*) &mvp);
-      glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
+      glDrawElements(GL_TRIANGLES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
     }
 
     if (r > 1.0f) {
