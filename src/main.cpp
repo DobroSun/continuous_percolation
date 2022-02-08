@@ -304,7 +304,7 @@ regenerate:
   return Vec2 { x, y };
 }
 
-void naive_generate_random_points(dynamic_array<Vec2>* array, size_t N, float radius) {
+void naive_random_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
 
   for (size_t i = 0; i < N; i++) {
@@ -334,7 +334,7 @@ void naive_generate_random_points(dynamic_array<Vec2>* array, size_t N, float ra
   }
 }
 
-void poisson_disk_random_points(dynamic_array<Vec2>* array, size_t N, float radius) {
+void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   const float min_radius = 2 * radius;
   const float min_distance_between_nodes = min_radius * min_radius;
 
@@ -378,6 +378,96 @@ void poisson_disk_random_points(dynamic_array<Vec2>* array, size_t N, float radi
     if (!found_something) {
       array_remove(&active_points, index);
     }
+  }
+}
+
+void tightest_packing_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
+  float left_boundary  = -1.0f;
+  float right_boundary =  1.0f;
+  float lower_boundary = -1.0f;
+  float upper_boundary =  1.0f;
+
+  float height = sqrt(3) * radius;
+
+  float number_of_circles_per_x =        (right_boundary - left_boundary)  / (2*radius);
+  float number_of_circles_per_y = 1.5f * (upper_boundary - lower_boundary) / (height + radius); // @Incomplete: we missed one layer!
+
+  // round down.
+  size_t number_of_circles_per_layer0 = (size_t) round(number_of_circles_per_x + 0.5f) - 1;
+  size_t number_of_circles_per_layer1 = (size_t) round(number_of_circles_per_x + 0.5f - radius) - 1;
+  size_t number_of_layers             = (size_t) round(number_of_circles_per_y + 0.5f) - 1;
+  assert(number_of_layers >= 3);
+
+  printf("x := %g\n", number_of_circles_per_x);
+  printf("y := %g\n", number_of_circles_per_y);
+
+  printf("0, 1 := %lu : %lu\n", number_of_circles_per_layer0, number_of_circles_per_layer1);
+  printf("layers := %lu\n", number_of_layers);
+
+  Vec2 starting_point = { left_boundary+radius, lower_boundary+radius};
+
+
+  // @Incomplete: array_reserve.
+  assert(array->size == 0);
+  array_add(array, starting_point);
+
+  // fill up first layer.
+  for (size_t j = array->size; j < number_of_circles_per_layer0; j++) {
+    Vec2 point = (*array)[j-1];
+    point.x += 2 * radius;
+    array_add(array, point);
+  }
+
+  assert(array->size == number_of_circles_per_layer0);
+
+  // we want to fill up +1 and +2.
+  // +1 is p += Vec2{ radius, height   } 
+  // +2 is p += Vec2{ 0,      2*height }
+
+  size_t i                 = 0;
+  size_t layers_to_fill_up = (number_of_layers-1) / 2;
+  size_t additional_layer  = (number_of_layers-1) % 2;
+
+  printf("%lu\n", layers_to_fill_up);
+  printf("%lu\n", layers_to_fill_up);
+  printf("%lu\n", additional_layer);
+
+  while (i < layers_to_fill_up) {
+
+    size_t start = i * (number_of_circles_per_layer0 + number_of_circles_per_layer1);
+    size_t stop0 = start + number_of_circles_per_layer0;
+    size_t stop1 = start + number_of_circles_per_layer1;
+
+    assert(array->size == start + number_of_circles_per_layer0);
+
+    for (size_t j = start; j < stop1; j++) {
+      Vec2 point = (*array)[j];
+
+      point.x += radius;
+      point.y += height;
+
+      array_add(array, point);
+    }
+
+    assert(array->size == start + number_of_circles_per_layer0 + number_of_circles_per_layer1);
+
+
+    for (size_t j = start; j < stop0; j++) {
+      Vec2 point = (*array)[j];
+
+      point.x += 0;
+      point.y += 2*height;
+
+      array_add(array, point);
+    }
+
+    assert(array->size == start + 2*number_of_circles_per_layer0 + number_of_circles_per_layer1);
+
+    i++;
+  }
+
+  if (additional_layer) {
+    puts("Yeah!");
   }
 }
 
@@ -432,7 +522,7 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
 }
 
 /*
- What do I need to finish the project?
+ TODO:
   1) Algorithm to generate random points in specified area.
   2) Collecting array of points to a graph.
   3) Visualization (2D, 3D?)
@@ -456,25 +546,6 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
 
  Since there is only a constant number of surrounding nodes, we should use static arrays for all of them.
  Or should we allocate them dynamically? What is going to be more efficient / take less memory?
-
- + How to efficiently find all clusters ?
-  BFS will find only one cluster
-  Should we just do BFS from all unvisited node?
-*/
-
-/*
- if a vector2 is just two floats:
-  10^3 points ~ 8kb of memory.
-  10^6 points ~ 8mb of memory.
-  10^9 points ~ 8gb of memory.
-
- My estimates for this project are:
-  10^7 points == 80  mb of memory.
-*/
-
-/*
-  Exponential node generation algorithm. :(
-  O(N^2) graph creation                  :(
 */
 
 /*
@@ -506,9 +577,10 @@ int main(int argc, char** argv) {
     dynamic_array<Vec2> positions;
     array_reserve(&positions, N);
 
-    //naive_generate_random_points(positions, N, radius);
-    poisson_disk_random_points(&positions, N, radius);
-    assert(check_nodes_do_not_intersect_each_other(positions.data, N, radius));
+    //naive_random_sampling(positions, N, radius);
+    //poisson_disk_sampling(&positions, N, radius);
+    tightest_packing_sampling(&positions, N, radius);
+    //assert(check_nodes_do_not_intersect_each_other(positions.data, N, radius));
 
     const double max_window_area  = 2.0f * 2.0f;
     const double max_circles_area = positions.size * PI * radius * radius;
@@ -567,19 +639,19 @@ int main(int argc, char** argv) {
 
     assert(check_hash_table_is_correct(hash_table, N));
 
+    uint max_cluster = cluster_sizes[0];
+    for (size_t i = 0; i < cluster_sizes.size; i++) {
+      uint size = cluster_sizes[i];
+      max_cluster = (size > max_cluster) ? size : max_cluster;
+    }
+    assert(max_cluster);
+
     printf("[..] Number of clusters := %lu\n", cluster_sizes.size);
     printf("[..] Cluster sizes := [");
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
     }
 
-    uint max_cluster = cluster_sizes[0];
-    for (size_t i = 0; i < cluster_sizes.size; i++) {
-      uint size = cluster_sizes[i];
-      max_cluster = (size > max_cluster) ? size : max_cluster;
-    }
-
-    assert(max_cluster);
     printf("[..] Percolating cluster size := %lu\n", max_cluster);
     puts("");
     puts("");
@@ -697,7 +769,7 @@ int main(int argc, char** argv) {
 
       glUniform4f       (uniform_color, r, 0.3f, 0.8f, 1.0f);
       glUniformMatrix4fv(uniform_mvp,   1, GL_FALSE, (float*) &mvp);
-      glDrawElements(GL_TRIANGLES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
+      glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
     }
 
     if (r > 1.0f) {
