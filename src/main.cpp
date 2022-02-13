@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include <memory> // @Incomplete: <- This is C++ std file. I can't figure out a C include file for alloca!
+#include <chrono>
 
 #include "windows.h"
 
@@ -49,6 +50,29 @@ struct Defer {
 
 struct Junk {};
 template<class T> inline const Defer<T> operator+(Junk, const T f) { return f; }
+
+struct Timer {
+  std::chrono::steady_clock::time_point start;
+  std::chrono::steady_clock::time_point end;
+
+  Timer()  {
+    start = std::chrono::steady_clock::now();
+	}
+
+  ~Timer() { 
+    end = std::chrono::steady_clock::now(); 
+    double delta = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    if(delta < 1000.) {
+      printf("%g ns\n", delta);
+    } else if(delta >= 1000. && delta < 1000000.) {
+      printf("%g us\n", delta/1000.);
+    } else if(delta >= 1000000. && delta < 1000000000.) {
+      printf("%g ms\n", delta/1000000.);
+    } else {
+      printf("%g s\n", delta/1000000000.);
+    }
+  }
+};
 
 
 const double PI  = 3.14159265358979323846;
@@ -237,7 +261,20 @@ float distance_squared(Vec2 a, Vec2 b) {
   return x2 + y2;
 }
 
-bool check_nodes_do_not_intersect_each_other(dynamic_array<Vec2>* array, float radius) {
+bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
+  for (size_t i = 0; i < array->size; i++) {
+    Vec2 v = (*array)[i];
+
+    float x = v.x;
+    float y = v.y;
+
+    assert(-1.0f <= x-radius && x+radius <= 1.0f);
+    assert(-1.0f <= y-radius && y+radius <= 1.0f);
+  }
+  return true;
+}
+
+bool check_circles_do_not_intersect_each_other(dynamic_array<Vec2>* array, float radius) {
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
 
   for (size_t i = 0; i < array->size; i++) {
@@ -395,6 +432,7 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   }
 }
 
+#if 0
 void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
   assert(array->size == 0);
 
@@ -403,7 +441,7 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
   float lower_boundary = -1.0f;
   float upper_boundary =  1.0f;
 
-  float height = sqrt(3) * radius + 1e-6; // @RemoveMe: 
+  float height = sqrt(3) * radius;
 
   // centers of a circle.
   float x;
@@ -420,13 +458,68 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
 
     while (x < right_boundary - radius) {
       array_add(array, Vec2{x, y});
-      x += 2*radius+ 1e-6; // @RemoveMe: 
+      x += 2*radius;
     }
 
     y += height;
     layer++;
   }
 }
+#else
+void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
+  float left_boundary  = -1.0f;
+  float right_boundary =  1.0f;
+  float lower_boundary = -1.0f;
+  float upper_boundary =  1.0f;
+
+  float height = sqrt(3) * radius + 1e-6; // @RemoveMe: 
+
+  // centers of a circle.
+  float x;
+  float y;
+
+  const float upper = upper_boundary - radius - height;
+  
+  float number_of_circles_per_x = (right_boundary - left_boundary) / (2*radius);
+  
+  size_t number_of_circles_per_layer0 = (size_t) round(number_of_circles_per_x + 0.5f) - 1;
+  size_t number_of_circles_per_layer1 = (size_t) round(number_of_circles_per_x + 0.5f - radius) - 1;
+
+  x = left_boundary + radius;
+  y = lower_boundary + radius;
+  for (size_t i = 0; i < number_of_circles_per_layer0; i++) { 
+    array_add(array, Vec2{x, y});
+    x += 2*radius;
+  }
+
+  x  = left_boundary + 2*radius;
+  y += height;
+  for (size_t i = 0; i < number_of_circles_per_layer1; i++) {
+    array_add(array, Vec2{x, y});
+    x += 2*radius;
+  }
+
+  while (y < upper) {
+    // can do 2 layers per iteration.
+
+    Vec2* to1   = array->data + array->size;
+    Vec2* from1 = to1 - number_of_circles_per_layer0 - number_of_circles_per_layer1; 
+    memcpy(to1, from1, sizeof(Vec2) * number_of_circles_per_layer0);
+    
+    array->size = array->size + number_of_circles_per_layer0;
+    Vec2* to2   = to1         + number_of_circles_per_layer0;
+    Vec2* from2 = from1       + number_of_circles_per_layer0;
+    memcpy(to2, from2, sizeof(Vec2) * number_of_circles_per_layer1);
+
+    for (size_t i = 0; i < number_of_circles_per_layer0 + number_of_circles_per_layer1; i++) {
+      to1[i].y += 2*height;
+    }
+
+    array->size += number_of_circles_per_layer1; 
+    y           += 2*height;
+  }
+}
+#endif
 
 bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return sqrt(distance_squared(a, b)) - 2*radius < L;
@@ -518,7 +611,7 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  const float radius = 0.0797885; // sqrt(proportion * max_window_area / (float)N / PI); // @Incomplete: this should be input to an algorithm.
+  const float radius = 0.5;
   const float L = radius + radius/10.0f;
 
   dynamic_array<Vec2> circles_array;
@@ -532,12 +625,18 @@ int main(int argc, char** argv) {
     printf("[..] Generating nodes ... \n");
 
     dynamic_array<Vec2> positions;
-    array_reserve(&positions, 1000);
+    array_reserve(&positions, 200000);
 
-    //naive_random_sampling(positions, N, radius);
-    //poisson_disk_sampling(&positions, N, radius);
-    tightest_packing_sampling(&positions, radius);
-    assert(check_nodes_do_not_intersect_each_other(&positions, radius));
+    {
+      printf("[..] Finished sampling points in := ");
+      Timer sample_points;
+      //naive_random_sampling(positions, N, radius);
+      //poisson_disk_sampling(&positions, N, radius);
+      tightest_packing_sampling(&positions, radius);
+    }
+    assert(check_circles_are_inside_a_box(&positions, radius));
+    assert(check_circles_do_not_intersect_each_other(&positions, radius));
+
 
     const size_t N = positions.size;
 
@@ -574,7 +673,12 @@ int main(int argc, char** argv) {
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
     memset(graph.connected_nodes,       0, sizeof(uint*)  * N);
 
-    naive_collect_points_to_graph(&graph, &positions, radius, L);
+  
+    {
+      printf("[..] Finished creating a graph in := ");
+      Timer create_graph;
+      naive_collect_points_to_graph(&graph, &positions, radius, L);
+    }
 
     printf("[..]\n");
     printf("[..] Starting BFS ... \n");
@@ -591,10 +695,15 @@ int main(int argc, char** argv) {
     queue.last     = 0;
     queue.max_size = N;
 
-    for (size_t i = 0; i < graph.count; i++) {
-      assert(is_queue_empty(&queue));
-      if (!hash_table[i]) {
-        breadth_first_search(&graph, &queue, hash_table, i, &cluster_sizes);
+    {
+      printf("[..] Finished BFS in := ");
+      Timer do_bfs;
+
+      for (size_t i = 0; i < graph.count; i++) {
+        assert(is_queue_empty(&queue));
+        if (!hash_table[i]) {
+          breadth_first_search(&graph, &queue, hash_table, i, &cluster_sizes);
+        }
       }
     }
 
