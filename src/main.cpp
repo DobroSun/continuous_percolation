@@ -237,14 +237,28 @@ float distance_squared(Vec2 a, Vec2 b) {
   return x2 + y2;
 }
 
-bool check_nodes_do_not_intersect_each_other(Vec2* positions, size_t N, float radius) {
+bool check_nodes_do_not_intersect_each_other(dynamic_array<Vec2>* array, float radius) {
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
-  auto array = positions;
-  for (size_t i = 0; i < N; i++) {
-    for (size_t j = 0; j < N; j++) {
+
+  for (size_t i = 0; i < array->size; i++) {
+    for (size_t j = 0; j < array->size; j++) {
       if (i == j) continue;
-      assert(     distance_squared(array[i], array[j])  >= min_distance_between_nodes);
-      assert(sqrt(distance_squared(array[i], array[j])) >= radius + radius);
+
+      double     dist1 = distance_squared((*array)[i], (*array)[j]);
+      double min_dist1 = min_distance_between_nodes;
+
+      double     dist2 = sqrt(dist1);
+      double min_dist2 = radius + radius;
+
+      #if 0
+      printf("(i, j) := (%zu, %zu)\n", i, j);
+      printf("(given, expected) := (%.17g, %.17g)\n", dist1, min_dist1);
+      printf("(given, expected) := (%.17g, %.17g)\n", dist2, min_dist2);
+      printf("[..]\n");
+      #endif
+
+      assert(dist1 >= min_dist1);
+      assert(dist2 >= min_dist2);
     }
   }
   return true;
@@ -381,103 +395,47 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   }
 }
 
-void tightest_packing_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
+void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
+  assert(array->size == 0);
+
   float left_boundary  = -1.0f;
   float right_boundary =  1.0f;
   float lower_boundary = -1.0f;
   float upper_boundary =  1.0f;
 
-  float height = sqrt(3) * radius;
+  float height = sqrt(3) * radius + 1e-6; // @RemoveMe: 
 
-  float number_of_circles_per_x =        (right_boundary - left_boundary)  / (2*radius);
-  float number_of_circles_per_y = 1.5f * (upper_boundary - lower_boundary) / (height + radius); // @Incomplete: we missed one layer!
+  // centers of a circle.
+  float x;
+  float y;
 
-  // round down.
-  size_t number_of_circles_per_layer0 = (size_t) round(number_of_circles_per_x + 0.5f) - 1;
-  size_t number_of_circles_per_layer1 = (size_t) round(number_of_circles_per_x + 0.5f - radius) - 1;
-  size_t number_of_layers             = (size_t) round(number_of_circles_per_y + 0.5f) - 1;
-  assert(number_of_layers >= 3);
+  size_t layer = 0;
 
-  printf("x := %g\n", number_of_circles_per_x);
-  printf("y := %g\n", number_of_circles_per_y);
+  y = lower_boundary + radius;
+  while (y < upper_boundary - radius) {
 
-  printf("0, 1 := %lu : %lu\n", number_of_circles_per_layer0, number_of_circles_per_layer1);
-  printf("layers := %lu\n", number_of_layers);
+    bool is_even = layer % 2 == 0;
+    x  = left_boundary;
+    x += (is_even) ? radius : 2*radius;
 
-  Vec2 starting_point = { left_boundary+radius, lower_boundary+radius};
-
-
-  // @Incomplete: array_reserve.
-  assert(array->size == 0);
-  array_add(array, starting_point);
-
-  // fill up first layer.
-  for (size_t j = array->size; j < number_of_circles_per_layer0; j++) {
-    Vec2 point = (*array)[j-1];
-    point.x += 2 * radius;
-    array_add(array, point);
-  }
-
-  assert(array->size == number_of_circles_per_layer0);
-
-  // we want to fill up +1 and +2.
-  // +1 is p += Vec2{ radius, height   } 
-  // +2 is p += Vec2{ 0,      2*height }
-
-  size_t i                 = 0;
-  size_t layers_to_fill_up = (number_of_layers-1) / 2;
-  size_t additional_layer  = (number_of_layers-1) % 2;
-
-  printf("%lu\n", layers_to_fill_up);
-  printf("%lu\n", layers_to_fill_up);
-  printf("%lu\n", additional_layer);
-
-  while (i < layers_to_fill_up) {
-
-    size_t start = i * (number_of_circles_per_layer0 + number_of_circles_per_layer1);
-    size_t stop0 = start + number_of_circles_per_layer0;
-    size_t stop1 = start + number_of_circles_per_layer1;
-
-    assert(array->size == start + number_of_circles_per_layer0);
-
-    for (size_t j = start; j < stop1; j++) {
-      Vec2 point = (*array)[j];
-
-      point.x += radius;
-      point.y += height;
-
-      array_add(array, point);
+    while (x < right_boundary - radius) {
+      array_add(array, Vec2{x, y});
+      x += 2*radius+ 1e-6; // @RemoveMe: 
     }
 
-    assert(array->size == start + number_of_circles_per_layer0 + number_of_circles_per_layer1);
-
-
-    for (size_t j = start; j < stop0; j++) {
-      Vec2 point = (*array)[j];
-
-      point.x += 0;
-      point.y += 2*height;
-
-      array_add(array, point);
-    }
-
-    assert(array->size == start + 2*number_of_circles_per_layer0 + number_of_circles_per_layer1);
-
-    i++;
-  }
-
-  if (additional_layer) {
-    puts("Yeah!");
+    y += height;
+    layer++;
   }
 }
 
-bool check_for_connection(Vec2 a, Vec2 b, float L) {
-  float distance = distance_squared(a, b);
-  return distance < L*L;
+bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
+  return sqrt(distance_squared(a, b)) - 2*radius < L;
 }
 
-void naive_collect_points_to_graph(Graph* graph, Vec2* array, float radius, float L) {
+void naive_collect_points_to_graph(Graph* graph, dynamic_array<Vec2>* array, float radius, float L) {
   const size_t N = graph->count;
+
+  assert(array->size == N);
 
   for (size_t i = 0; i < N; i++) {
     graph->connected_nodes[i] = graph->graph_data;
@@ -485,7 +443,7 @@ void naive_collect_points_to_graph(Graph* graph, Vec2* array, float radius, floa
     for (size_t j = 0; j < N; j++) {
       if (i == j) continue; // nodes are the same => should be no connection with itself.
 
-      if (check_for_connection(array[i], array[j], L)) {
+      if (check_for_connection((*array)[i], (*array)[j], radius, L)) {
         graph->connected_nodes[i][graph->connected_nodes_count[i]] = j;
         graph->connected_nodes_count[i] += 1;
         graph->graph_data++;
@@ -560,9 +518,8 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  const size_t N = 100;
   const float radius = 0.0797885; // sqrt(proportion * max_window_area / (float)N / PI); // @Incomplete: this should be input to an algorithm.
-  const float L = radius + 0.1f;
+  const float L = radius + radius/10.0f;
 
   dynamic_array<Vec2> circles_array;
   defer { array_free(&circles_array); };
@@ -575,21 +532,24 @@ int main(int argc, char** argv) {
     printf("[..] Generating nodes ... \n");
 
     dynamic_array<Vec2> positions;
-    array_reserve(&positions, N);
+    array_reserve(&positions, 1000);
 
     //naive_random_sampling(positions, N, radius);
     //poisson_disk_sampling(&positions, N, radius);
-    tightest_packing_sampling(&positions, N, radius);
-    //assert(check_nodes_do_not_intersect_each_other(positions.data, N, radius));
+    tightest_packing_sampling(&positions, radius);
+    assert(check_nodes_do_not_intersect_each_other(&positions, radius));
+
+    const size_t N = positions.size;
 
     const double max_window_area  = 2.0f * 2.0f;
     const double max_circles_area = positions.size * PI * radius * radius;
     const double packing_factor   = max_circles_area / max_window_area;
 
-    printf("[..] Radius of a circle := %g\n", radius);
-    printf("[..] Circles area       := %g\n", max_circles_area);
-    printf("[..] Window  area       := %g\n", max_window_area);
-    printf("[..] Generated          := %lu points!\n", positions.size);
+    printf("[..] Radius of a circle   := %g\n", radius);
+    printf("[..] Connection radius(L) := %g\n", L);
+    printf("[..] Circles area         := %g\n", max_circles_area);
+    printf("[..] Window  area         := %g\n", max_window_area);
+    printf("[..] Generated            := %lu points!\n", positions.size);
     printf("[..] Resulting packing factor := %g\n", packing_factor);
 
     assert(max_circles_area < max_window_area);
@@ -614,7 +574,7 @@ int main(int argc, char** argv) {
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
     memset(graph.connected_nodes,       0, sizeof(uint*)  * N);
 
-    naive_collect_points_to_graph(&graph, positions.data, radius, L);
+    naive_collect_points_to_graph(&graph, &positions, radius, L);
 
     printf("[..]\n");
     printf("[..] Starting BFS ... \n");
@@ -622,7 +582,8 @@ int main(int argc, char** argv) {
     dynamic_array<uint> cluster_sizes;
     defer { array_free(&cluster_sizes); };
 
-    bool hash_table[N] = {}; // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+    bool* hash_table = (bool*) alloca(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+    memset(hash_table, 0, sizeof(bool) * N);
 
     Queue queue;
     queue.data     = (uint*) alloca(sizeof(uint) * N);
