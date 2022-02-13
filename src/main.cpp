@@ -29,6 +29,8 @@ typedef uint64_t uint64;
 
 typedef uint32 uint;
 
+const double PI  = 3.14159265358979323846;
+const double TAU = 6.28318530717958647692;
 
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
@@ -74,139 +76,15 @@ struct Timer {
   }
 };
 
-
-const double PI  = 3.14159265358979323846;
-const double TAU = 6.28318530717958647692;
-
 struct string {
   char*  data;
   size_t count;
 };
 
-#define make_string(x) { x, sizeof(x)-1 }
-
-static bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
-static bool string_compare(string a, const char* b) { return string_compare(b, a); }
-
-
-string read_entire_file(const char* filename) {
-  File file;
-  bool success = file_open(&file, filename);
-  if (!success) { return {}; }
-
-  defer { file_close(&file); };
-
-  size_t size = file_get_size(&file);
-  char*  data = (char*) malloc(size+1);
-  memset(data, 0, size+1);
-
-  size_t written = 0;
-  success = file_read(&file, data, size, &written);
-  if (!success)        { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
-  if (written != size) { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
-
-  return { data, size };
-}
-
 struct Vertex_And_Fragment_Shaders {
   string vertex;
   string fragment;
 };
-
-Vertex_And_Fragment_Shaders load_shaders(const char* filename) {
-  string s = read_entire_file(filename); // @MemoryLeak: 
-  if (!s.count) return {};               // @MemoryLeak: 
-
-  static const string vertex_tag   = make_string("#vertex");
-  static const string fragment_tag = make_string("#fragment");
-  static const string tags[]       = { vertex_tag, fragment_tag, make_string("") };
-
-  string shaders[2];
-
-  size_t index  = 0;
-  char*  cursor = s.data;
-
-  string* current_shader = NULL;
-
-  while (*cursor != '\0') {
-    if (string_compare(cursor, tags[index])) {
-      cursor += tags[index].count;
-
-      current_shader = &shaders[index];
-      current_shader->data  = cursor;
-      current_shader->count = 0;
-      index++;
-
-    } else {
-      if (current_shader) current_shader->count++;
-      cursor++;
-    }
-  }
-
-  assert(index == 2 && "shader file should contain #vertex and #fragment tags in order!");
-  assert(shaders[0].count != 0 && shaders[1].count != 0 && "vertex and fragment shaders should not be empty!");
-
-  return { shaders[0], shaders[1] };
-}
-
-unsigned compile_shader(string source, unsigned type) {
-  unsigned int id = glCreateShader(type);
-
-  int len = source.count;
-  glShaderSource(id, 1, &source.data, &len);
-  glCompileShader(id);
-
-  int status;
-  glGetShaderiv(id, GL_COMPILE_STATUS, &status);
-  if (!status) {
-    int length;
-    char* message;
-
-    glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
-
-    message = (char*) alloca(length);
-
-    glGetShaderInfoLog(id, length, &length, message);
-    glDeleteShader(id);
-
-    const char* shader_name = type == GL_VERTEX_SHADER ? "vertex" : "fragment";
-    printf("[..] Failed to compile %s shader!\n", shader_name);
-    puts(message);
-    return 0;
-  }
-  
-  return id;
-}
-
-unsigned create_shader(string vertex, string fragment) {
-  unsigned program = glCreateProgram();
-
-  unsigned vs = compile_shader(vertex,   GL_VERTEX_SHADER);
-  unsigned fs = compile_shader(fragment, GL_FRAGMENT_SHADER);
-
-  if (!vs) return 0;
-  if (!fs) return 0;
-
-  glAttachShader(program, vs);
-  glAttachShader(program, fs);
-  glLinkProgram(program);
-  glValidateProgram(program);
-
-  glDetachShader(program, vs);
-  glDetachShader(program, fs);
-
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-
-  return program;
-}
-
-void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
-  printf("[..] %s: %.*s\n", (type == GL_DEBUG_TYPE_ERROR ? "GL ERROR" : "" ), (int)length, message);
-
-  __debugbreak(); // @MSVC_Only: 
-}
-
 
 struct Vec2 {
   float x, y;
@@ -472,52 +350,51 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
   float lower_boundary = -1.0f;
   float upper_boundary =  1.0f;
 
-  float height = sqrt(3) * radius + 1e-6; // @RemoveMe: 
+  float height     = sqrt(3) * radius;
+  float last_place = upper_boundary - radius - height;
 
-  // centers of a circle.
+  float number_of_circles_per_x = (right_boundary - left_boundary) / (2*radius);
+
+  // round down!
+  uint number_of_circles_per_layer0 = (uint) round(number_of_circles_per_x + 0.5f)        - 1;
+  uint number_of_circles_per_layer1 = (uint) round(number_of_circles_per_x + 0.5f - 0.5f) - 1;
+  uint number_of_circles_per_2_layers = number_of_circles_per_layer0 + number_of_circles_per_layer1;
+
+  Vec2* copy_from = array->data;
+
   float x;
   float y;
 
-  const float upper = upper_boundary - radius - height;
-  
-  float number_of_circles_per_x = (right_boundary - left_boundary) / (2*radius);
-  
-  size_t number_of_circles_per_layer0 = (size_t) round(number_of_circles_per_x + 0.5f) - 1;
-  size_t number_of_circles_per_layer1 = (size_t) round(number_of_circles_per_x + 0.5f - radius) - 1;
-
   x = left_boundary + radius;
   y = lower_boundary + radius;
-  for (size_t i = 0; i < number_of_circles_per_layer0; i++) { 
+  for (uint i = 0; i < number_of_circles_per_layer0; i++) { 
     array_add(array, Vec2{x, y});
     x += 2*radius;
   }
 
   x  = left_boundary + 2*radius;
   y += height;
-  for (size_t i = 0; i < number_of_circles_per_layer1; i++) {
+  for (uint i = 0; i < number_of_circles_per_layer1; i++) {
     array_add(array, Vec2{x, y});
     x += 2*radius;
   }
 
-  while (y < upper) {
-    // can do 2 layers per iteration.
+  while (y < last_place) {
+    Vec2* to = copy_from + number_of_circles_per_2_layers;
+    memcpy(to, copy_from, sizeof(Vec2) * number_of_circles_per_2_layers);
 
-    Vec2* to1   = array->data + array->size;
-    Vec2* from1 = to1 - number_of_circles_per_layer0 - number_of_circles_per_layer1; 
-    memcpy(to1, from1, sizeof(Vec2) * number_of_circles_per_layer0);
-    
-    array->size = array->size + number_of_circles_per_layer0;
-    Vec2* to2   = to1         + number_of_circles_per_layer0;
-    Vec2* from2 = from1       + number_of_circles_per_layer0;
-    memcpy(to2, from2, sizeof(Vec2) * number_of_circles_per_layer1);
-
-    for (size_t i = 0; i < number_of_circles_per_layer0 + number_of_circles_per_layer1; i++) {
-      to1[i].y += 2*height;
+    for (uint i = 0; i < number_of_circles_per_2_layers; i++) {
+      to[i].y += 2*height;
     }
 
-    array->size += number_of_circles_per_layer1; 
+    array->size += number_of_circles_per_2_layers;
+    copy_from   += number_of_circles_per_2_layers;
     y           += 2*height;
   }
+  // 
+  // @Incomplete: what if we can fit one additional layer?
+  // if ...
+  // 
 }
 #endif
 
@@ -608,6 +485,124 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
   if N == 10^7 => total 3.0 gb of data.
 */
 
+#define make_string(x) { (x), sizeof(x)-1 }
+
+static bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
+static bool string_compare(string a, const char* b) { return string_compare(b, a); }
+
+string read_entire_file(const char* filename) {
+  File file;
+  bool success = file_open(&file, filename);
+  if (!success) { return {}; }
+
+  defer { file_close(&file); };
+
+  size_t size = file_get_size(&file);
+  char*  data = (char*) malloc(size+1);
+  memset(data, 0, size+1);
+
+  size_t written = 0;
+  success = file_read(&file, data, size, &written);
+  if (!success)        { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
+  if (written != size) { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
+
+  return { data, size };
+}
+
+Vertex_And_Fragment_Shaders load_shaders(const char* filename) {
+  string s = read_entire_file(filename); // @MemoryLeak: 
+  if (!s.count) return {};               // @MemoryLeak: 
+
+  static const string vertex_tag   = make_string("#vertex");
+  static const string fragment_tag = make_string("#fragment");
+  static const string tags[]       = { vertex_tag, fragment_tag, make_string("") };
+
+  string shaders[2];
+
+  size_t index  = 0;
+  char*  cursor = s.data;
+
+  string* current_shader = NULL;
+
+  while (*cursor != '\0') {
+    if (string_compare(cursor, tags[index])) {
+      cursor += tags[index].count;
+
+      current_shader = &shaders[index];
+      current_shader->data  = cursor;
+      current_shader->count = 0;
+      index++;
+
+    } else {
+      if (current_shader) current_shader->count++;
+      cursor++;
+    }
+  }
+
+  assert(index == 2 && "shader file should contain #vertex and #fragment tags in order!");
+  assert(shaders[0].count != 0 && shaders[1].count != 0 && "vertex and fragment shaders should not be empty!");
+
+  return { shaders[0], shaders[1] };
+}
+
+unsigned compile_shader(string source, unsigned type) {
+  unsigned int id = glCreateShader(type);
+
+  int len = source.count;
+  glShaderSource(id, 1, &source.data, &len);
+  glCompileShader(id);
+
+  int status;
+  glGetShaderiv(id, GL_COMPILE_STATUS, &status);
+  if (!status) {
+    int length;
+    char* message;
+
+    glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
+
+    message = (char*) alloca(length);
+
+    glGetShaderInfoLog(id, length, &length, message);
+    glDeleteShader(id);
+
+    const char* shader_name = type == GL_VERTEX_SHADER ? "vertex" : "fragment";
+    printf("[..] Failed to compile %s shader!\n", shader_name);
+    puts(message);
+    return 0;
+  }
+  
+  return id;
+}
+
+unsigned create_shader(string vertex, string fragment) {
+  unsigned program = glCreateProgram();
+
+  unsigned vs = compile_shader(vertex,   GL_VERTEX_SHADER);
+  unsigned fs = compile_shader(fragment, GL_FRAGMENT_SHADER);
+
+  if (!vs) return 0;
+  if (!fs) return 0;
+
+  glAttachShader(program, vs);
+  glAttachShader(program, fs);
+  glLinkProgram(program);
+  glValidateProgram(program);
+
+  glDetachShader(program, vs);
+  glDetachShader(program, fs);
+
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+
+  return program;
+}
+
+void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+  printf("[..] %s: %.*s\n", (type == GL_DEBUG_TYPE_ERROR ? "GL ERROR" : "" ), (int)length, message);
+
+  __debugbreak(); // @MSVC_Only: 
+}
+
 int main(int argc, char** argv) {
   init_filesystem_api();
 
@@ -630,7 +625,7 @@ int main(int argc, char** argv) {
     {
       printf("[..] Finished sampling points in := ");
       Timer sample_points;
-      //naive_random_sampling(positions, N, radius);
+      //naive_random_sampling(&positions, N, radius);
       //poisson_disk_sampling(&positions, N, radius);
       tightest_packing_sampling(&positions, radius);
     }
@@ -662,7 +657,7 @@ int main(int argc, char** argv) {
     defer { free(memory); };
 
     printf("[..] Successfully allocated 10 gigabytes of memory!\n");
-    printf("[..] Collecting nodes to a graph ... \n");
+    printf("[..] Collecting nodes to graph ... \n");
 
     Graph graph;
     graph.count = N;
@@ -673,9 +668,8 @@ int main(int argc, char** argv) {
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
     memset(graph.connected_nodes,       0, sizeof(uint*)  * N);
 
-  
     {
-      printf("[..] Finished creating a graph in := ");
+      printf("[..] Finished creating graph in := ");
       Timer create_graph;
       naive_collect_points_to_graph(&graph, &positions, radius, L);
     }
@@ -729,6 +723,20 @@ int main(int argc, char** argv) {
 
     circles_array = positions;
   }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   if (!glfwInit()) {
     puts("[..] failed glfwInit()");
