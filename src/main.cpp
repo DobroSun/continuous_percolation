@@ -351,14 +351,18 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
   float upper_boundary =  1.0f;
 
   float height     = sqrt(3) * radius;
-  float last_place = upper_boundary - radius - height;
+  float last_place = upper_boundary - (radius + height);
 
-  float number_of_circles_per_x = (right_boundary - left_boundary) / (2*radius);
+  float number_of_circles_per_x = (right_boundary - left_boundary)  / (2*radius);
+  float number_of_circles_per_y = (upper_boundary - lower_boundary) / (height);
 
   // round down!
   uint number_of_circles_per_layer0 = (uint) round(number_of_circles_per_x + 0.5f)        - 1;
   uint number_of_circles_per_layer1 = (uint) round(number_of_circles_per_x + 0.5f - 0.5f) - 1;
+  uint number_of_layers             = (uint) round(number_of_circles_per_y + 0.5f)        - 1;
+
   uint number_of_circles_per_2_layers = number_of_circles_per_layer0 + number_of_circles_per_layer1;
+  uint number_of_unfilled_layers = number_of_layers/2;
 
   Vec2* copy_from = array->data;
 
@@ -379,7 +383,9 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
     x += 2*radius;
   }
 
-  while (y < last_place) {
+  number_of_unfilled_layers--;
+
+  while (number_of_unfilled_layers) {
     Vec2* to = copy_from + number_of_circles_per_2_layers;
     memcpy(to, copy_from, sizeof(Vec2) * number_of_circles_per_2_layers);
 
@@ -390,11 +396,22 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
     array->size += number_of_circles_per_2_layers;
     copy_from   += number_of_circles_per_2_layers;
     y           += 2*height;
+    number_of_unfilled_layers--;
   }
-  // 
-  // @Incomplete: what if we can fit one additional layer?
-  // if ...
-  // 
+
+  if (number_of_layers % 2) {
+    Vec2* to = copy_from + number_of_circles_per_2_layers;
+    memcpy(to, copy_from, sizeof(Vec2) * number_of_circles_per_layer0);
+
+    for (uint i = 0; i < number_of_circles_per_layer0; i++) {
+      to[i].y += 2*height;
+    }
+      
+    array->size += number_of_circles_per_layer0;
+    y += height;
+  }
+
+  assert(y < upper_boundary && y + 2*height > upper_boundary);
 }
 #endif
 
@@ -606,7 +623,7 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  const float radius = 0.5;
+  const float radius = 0.0001;
   const float L = radius + radius/10.0f;
 
   dynamic_array<Vec2> circles_array;
@@ -620,7 +637,7 @@ int main(int argc, char** argv) {
     printf("[..] Generating nodes ... \n");
 
     dynamic_array<Vec2> positions;
-    array_reserve(&positions, 200000);
+    array_reserve(&positions, 200000000);
 
     {
       printf("[..] Finished sampling points in := ");
@@ -629,8 +646,8 @@ int main(int argc, char** argv) {
       //poisson_disk_sampling(&positions, N, radius);
       tightest_packing_sampling(&positions, radius);
     }
-    assert(check_circles_are_inside_a_box(&positions, radius));
-    assert(check_circles_do_not_intersect_each_other(&positions, radius));
+    //assert(check_circles_are_inside_a_box(&positions, radius));
+    //assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
 
     const size_t N = positions.size;
