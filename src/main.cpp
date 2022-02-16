@@ -31,6 +31,7 @@ typedef uint32 uint;
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
+const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
 
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
@@ -94,7 +95,7 @@ struct Graph {
   uint    count;
 
   uint16* connected_nodes_count;
-  uint**  connected_nodes; // @Incomplete: if we ever need we can make this use less space, instead of using pointers we can go with just uints.
+  uint**  connected_nodes;
 
   // for graph creation.
   uint*   graph_data;
@@ -179,7 +180,7 @@ bool check_circles_do_not_intersect_each_other(dynamic_array<Vec2>* array, float
   return true;
 }
 
-bool check_hash_table_is_correct(bool* hash_table, size_t N) {
+bool check_hash_table_is_filled_up(bool* hash_table, size_t N) {
   for (size_t i = 0; i < N; i++) {
     assert(hash_table[i]);
   }
@@ -310,8 +311,8 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   }
 }
 
-#if 0
-void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
+#if 1
+void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, float packing_factor) {
   assert(array->size == 0);
 
   float left_boundary  = -1.0f;
@@ -319,18 +320,20 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
   float lower_boundary = -1.0f;
   float upper_boundary =  1.0f;
 
+  // target_radius^2 -- packing_factor.
+  // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
+  float radius = sqrt(target_radius*target_radius * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
   float height = sqrt(3) * radius;
 
   // centers of a circle.
   float x;
   float y;
 
-  size_t layer = 0;
+  bool is_even = true;
 
   y = lower_boundary + radius;
   while (y < upper_boundary - radius) {
 
-    bool is_even = layer % 2 == 0;
     x  = left_boundary;
     x += (is_even) ? radius : 2*radius;
 
@@ -340,11 +343,11 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
     }
 
     y += height;
-    layer++;
+    is_even = !is_even;
   }
 }
 #else
-void tightest_packing_sampling(dynamic_array<Vec2>* array, float radius) {
+void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, float packing_factor) {
   float left_boundary  = -1.0f;
   float right_boundary =  1.0f;
   float lower_boundary = -1.0f;
@@ -623,8 +626,9 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  const float radius = 0.0001;
-  const float L = radius + radius/10.0f;
+  float radius = 0.005;
+  float L      = radius + radius/10.0f;
+  float packing_factor = 0.7;
 
   dynamic_array<Vec2> circles_array;
   defer { array_free(&circles_array); };
@@ -634,17 +638,16 @@ int main(int argc, char** argv) {
     srand(seed);
 
 
-    printf("[..] Generating nodes ... \n");
-
     dynamic_array<Vec2> positions;
     array_reserve(&positions, 200000000);
 
     {
+      printf("[..] Generating nodes ... \n");
       printf("[..] Finished sampling points in := ");
       Timer sample_points;
       //naive_random_sampling(&positions, N, radius);
       //poisson_disk_sampling(&positions, N, radius);
-      tightest_packing_sampling(&positions, radius);
+      tightest_packing_sampling(&positions, radius, packing_factor);
     }
     //assert(check_circles_are_inside_a_box(&positions, radius));
     //assert(check_circles_do_not_intersect_each_other(&positions, radius));
@@ -654,27 +657,24 @@ int main(int argc, char** argv) {
 
     const double max_window_area  = 2.0f * 2.0f;
     const double max_circles_area = positions.size * PI * radius * radius;
-    const double packing_factor   = max_circles_area / max_window_area;
+    const double experimental_packing_factor = max_circles_area / max_window_area;
 
     printf("[..] Radius of a circle   := %g\n", radius);
     printf("[..] Connection radius(L) := %g\n", L);
-    printf("[..] Circles area         := %g\n", max_circles_area);
-    printf("[..] Window  area         := %g\n", max_window_area);
-    printf("[..] Generated            := %lu points!\n", positions.size);
-    printf("[..] Resulting packing factor := %g\n", packing_factor);
+    printf("{..] Packing factor       := %g\n", packing_factor);
+    printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
+    printf("[..] Generated points     := %zu\n", positions.size);
+    printf("[..]\n");
 
     assert(max_circles_area < max_window_area);
-    assert(N < UINT_MAX);                         // because we are using uints to address graph nodes, N is required to be less than that.
-    assert(packing_factor <= PI * sqrt(3) / 6.0); // packing factor must be less than 0.9069...
+    assert(N < UINT_MAX);                                 // because we are using uints to address graph nodes, N is required to be less than that.
+    assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR); // packing factor must be less than 0.9069...
+    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
-    printf("[..]\n");
 
     const size_t a_lot = 1e10; // ~ 10 gigabytes.
     char* memory = (char*) malloc(a_lot);
     defer { free(memory); };
-
-    printf("[..] Successfully allocated 10 gigabytes of memory!\n");
-    printf("[..] Collecting nodes to graph ... \n");
 
     Graph graph;
     graph.count = N;
@@ -683,22 +683,22 @@ int main(int argc, char** argv) {
     graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(uint*)  * N);
 
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
-    memset(graph.connected_nodes,       0, sizeof(uint*)  * N);
 
     {
+      printf("[..] Successfully allocated 10 gigabytes of memory!\n");
+      printf("[..] Collecting nodes to graph ... \n");
       printf("[..] Finished creating graph in := ");
       Timer create_graph;
       naive_collect_points_to_graph(&graph, &positions, radius, L);
     }
 
-    printf("[..]\n");
-    printf("[..] Starting BFS ... \n");
+
 
     dynamic_array<uint> cluster_sizes;
     defer { array_free(&cluster_sizes); };
 
     bool* hash_table = (bool*) alloca(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
-    memset(hash_table, 0, sizeof(bool) * N);
+    memset(hash_table, false, sizeof(bool) * N);
 
     Queue queue;
     queue.data     = (uint*) alloca(sizeof(uint) * N);
@@ -707,6 +707,8 @@ int main(int argc, char** argv) {
     queue.max_size = N;
 
     {
+      printf("[..]\n");
+      printf("[..] Starting BFS ... \n");
       printf("[..] Finished BFS in := ");
       Timer do_bfs;
 
@@ -717,9 +719,9 @@ int main(int argc, char** argv) {
         }
       }
     }
+    assert(check_hash_table_is_filled_up(hash_table, N));
 
-    assert(check_hash_table_is_correct(hash_table, N));
-
+    // Find the biggest cluster.
     uint max_cluster = cluster_sizes[0];
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       uint size = cluster_sizes[i];
@@ -727,16 +729,18 @@ int main(int argc, char** argv) {
     }
     assert(max_cluster);
 
-    printf("[..] Number of clusters := %lu\n", cluster_sizes.size);
-    printf("[..] Cluster sizes := [");
-    for (size_t i = 0; i < cluster_sizes.size; i++) {
-      printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
-    }
+    {
+      printf("[..] Percolating cluster size := %u\n", max_cluster);
+      printf("[..] Number of clusters := %zu\n", cluster_sizes.size);
+      printf("[..] Cluster sizes := [");
+      for (size_t i = 0; i < cluster_sizes.size; i++) {
+        printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
+      }
 
-    printf("[..] Percolating cluster size := %lu\n", max_cluster);
-    puts("");
-    puts("");
-    puts("");
+      puts("");
+      puts("");
+      puts("");
+    }
 
     circles_array = positions;
   }

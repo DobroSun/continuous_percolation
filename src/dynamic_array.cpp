@@ -5,16 +5,16 @@
 
 template<class T>
 struct dynamic_array {
-  T*   data     = NULL;
-  uint size     = 0;
-  uint capacity = 0;
+  T*     data     = NULL;
+  size_t size     = 0;
+  size_t capacity = 0;
 
-  T& operator[](uint64 index) {
+  T& operator[](size_t index) {
     assert(index < size);
     return data[index];
   }
 
-  const T& operator[](uint64 index) const {
+  const T& operator[](size_t index) const {
     assert(index < size);
     return data[index];
   }
