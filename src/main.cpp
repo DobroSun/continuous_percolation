@@ -33,6 +33,8 @@ const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
 const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
 
+#define square(x) ( (x) * (x) )
+
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
 #include "dynamic_array.cpp"
@@ -135,8 +137,8 @@ bool is_queue_empty(const Queue* queue) {
 float distance_squared(Vec2 a, Vec2 b) {
   float x  = (a.x - b.x);
   float y  = (a.y - b.y);
-  float x2 = x * x;
-  float y2 = y * y;
+  float x2 = square(x);
+  float y2 = square(y);
   return x2 + y2;
 }
 
@@ -419,7 +421,7 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, 
 #endif
 
 bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
-  return sqrt(distance_squared(a, b)) - 2*radius < L;
+  return distance_squared(a, b) < square(L + 2*radius);
 }
 
 void naive_collect_points_to_graph(Graph* graph, dynamic_array<Vec2>* array, float radius, float L) {
