@@ -33,13 +33,16 @@ const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
 const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
 
-#define square(x) ( (x) * (x) )
+#define max(x, y)     ( (x) > (y) ? (x) : (y) )
+#define square(x)     ( (x) * (x) )
+#define round_down(x) ((size_t)(round((float)(x) + 0.5f) - 1))
 
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
 #include "dynamic_array.cpp"
 
 
+#define measure_scope() Timer ANONYMOUS_NAME
 
 #define defer auto ANONYMOUS_NAME = Junk{} + [&]()
 #define ANONYMOUS_NAME CONCAT(GAMMA, __LINE__)
@@ -91,6 +94,17 @@ struct Vertex_And_Fragment_Shaders {
 
 struct Vec2 {
   float x, y;
+};
+
+struct Grid2D {
+  Vec2** data;
+
+  size_t number_of_cells_per_dimension;
+  size_t number_of_cells;
+
+  // all cells are (cell_size x cell_size)
+  float cell_size;
+
 };
 
 struct Graph {
@@ -324,7 +338,7 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, 
 
   // target_radius^2 -- packing_factor.
   // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
-  float radius = sqrt(target_radius*target_radius * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
+  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
   float height = sqrt(3) * radius;
 
   // centers of a circle.
@@ -419,6 +433,32 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, 
   assert(y < upper_boundary && y + 2*height > upper_boundary);
 }
 #endif
+
+
+void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
+  float left_boundary  = -1.0f;
+  float lower_boundary = -1.0f;
+
+  float  cell  = grid->cell_size;
+  size_t width = grid->number_of_cells_per_dimension;
+
+  for (size_t k = 0; k < positions->size; k++) {
+    Vec2* circle = &(*positions)[k];
+
+    float x = circle->x - left_boundary;
+    float y = circle->y - lower_boundary;
+
+    size_t i = round_down(x / cell);
+    size_t j = round_down(y / cell);
+
+    size_t index = i*width + j;
+    assert(index < grid->number_of_cells);
+    assert(grid->data[index] == NULL);
+
+    grid->data[index] = circle;
+  }
+}
+
 
 bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
@@ -628,7 +668,7 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.005;
+  float radius = 0.0001;
   float L      = radius + radius/10.0f;
   float packing_factor = 0.7;
 
@@ -646,7 +686,8 @@ int main(int argc, char** argv) {
     {
       printf("[..] Generating nodes ... \n");
       printf("[..] Finished sampling points in := ");
-      Timer sample_points;
+
+      measure_scope();
       //naive_random_sampling(&positions, N, radius);
       //poisson_disk_sampling(&positions, N, radius);
       tightest_packing_sampling(&positions, radius, packing_factor);
@@ -654,43 +695,73 @@ int main(int argc, char** argv) {
     //assert(check_circles_are_inside_a_box(&positions, radius));
     //assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
-
     const size_t N = positions.size;
+    float one_dimension_range = 2.0f;
+    float max_window_area  = 2.0f * 2.0f;
+    float max_circles_area = positions.size * PI * square(radius);
+    float experimental_packing_factor = max_circles_area / max_window_area;
 
-    const double max_window_area  = 2.0f * 2.0f;
-    const double max_circles_area = positions.size * PI * radius * radius;
-    const double experimental_packing_factor = max_circles_area / max_window_area;
-
+    printf("[..]\n");
     printf("[..] Radius of a circle   := %g\n", radius);
     printf("[..] Connection radius(L) := %g\n", L);
     printf("{..] Packing factor       := %g\n", packing_factor);
     printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
     printf("[..] Generated points     := %zu\n", positions.size);
-    printf("[..]\n");
 
     assert(max_circles_area < max_window_area);
-    assert(N < UINT_MAX);                                 // because we are using uints to address graph nodes, N is required to be less than that.
-    assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR); // packing factor must be less than 0.9069...
+    assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
+    assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
     assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
+
+    Grid2D grid; 
+    grid.cell_size                     = radius;
+    grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
+    grid.number_of_cells               = max_window_area / square(grid.cell_size);
+    grid.data                          = (Vec2**) malloc(sizeof(Vec2*) * grid.number_of_cells);
+
+    defer { free(grid.data); };
+    memset(grid.data, 0, sizeof(Vec2*) * grid.number_of_cells);
+
+    {
+      // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
+      printf("[..]\n");
+      printf("[..] Collecting nodes to a grid ... \n");
+      printf("[..] Finished creating a grid in := ");
+      measure_scope();
+      create_square_grid(&grid, &positions);
+    }
+
+/*
+    {
+      printf("[..]\n");
+      printf("[..] Random walk ... \n");
+      printf("[..] Finished random walk in := ");
+      measure_scope();
+      do_random_walk(&positions);
+    }
+*/
+
+
     const size_t a_lot = 1e10; // ~ 10 gigabytes.
-    char* memory = (char*) malloc(a_lot);
-    defer { free(memory); };
 
     Graph graph;
     graph.count = N;
-    graph.connected_nodes_count = (uint16*) memory;
+    graph.connected_nodes_count = (uint16*) malloc(a_lot);
     graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(uint16) * N);
     graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(uint*)  * N);
 
+    defer { free(graph.connected_nodes_count); };
     memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
 
     {
+      // @Incomplete: use a grid to simplify algorithm.
+      printf("[..]\n");
       printf("[..] Successfully allocated 10 gigabytes of memory!\n");
       printf("[..] Collecting nodes to graph ... \n");
       printf("[..] Finished creating graph in := ");
-      Timer create_graph;
+      measure_scope();
       naive_collect_points_to_graph(&graph, &positions, radius, L);
     }
 
@@ -699,20 +770,24 @@ int main(int argc, char** argv) {
     dynamic_array<uint> cluster_sizes;
     defer { array_free(&cluster_sizes); };
 
-    bool* hash_table = (bool*) alloca(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+    bool* hash_table = (bool*) malloc(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+
+    defer { free(hash_table); };
     memset(hash_table, false, sizeof(bool) * N);
 
     Queue queue;
-    queue.data     = (uint*) alloca(sizeof(uint) * N);
+    queue.data     = (uint*) malloc(sizeof(uint) * N);
     queue.first    = 0;
     queue.last     = 0;
     queue.max_size = N;
+
+    defer { free(queue.data); };
 
     {
       printf("[..]\n");
       printf("[..] Starting BFS ... \n");
       printf("[..] Finished BFS in := ");
-      Timer do_bfs;
+      measure_scope();
 
       for (size_t i = 0; i < graph.count; i++) {
         assert(is_queue_empty(&queue));
@@ -721,13 +796,12 @@ int main(int argc, char** argv) {
         }
       }
     }
-    assert(check_hash_table_is_filled_up(hash_table, N));
+    //assert(check_hash_table_is_filled_up(hash_table, N));
 
     // Find the biggest cluster.
     uint max_cluster = cluster_sizes[0];
     for (size_t i = 0; i < cluster_sizes.size; i++) {
-      uint size = cluster_sizes[i];
-      max_cluster = (size > max_cluster) ? size : max_cluster;
+      max_cluster = max(cluster_sizes[i], max_cluster);
     }
     assert(max_cluster);
 
@@ -850,7 +924,6 @@ int main(int argc, char** argv) {
   assert(uniform_mvp   != -1);
 
   glm::mat4 projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
-  glm::mat4 model      = glm::mat4(1);
 
   float r = 0.0f;
   float increment = 0.05f;
