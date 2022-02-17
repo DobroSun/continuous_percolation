@@ -96,6 +96,10 @@ struct Vec2 {
   float x, y;
 };
 
+struct Grid_Position {
+  size_t i, j;
+};
+
 struct Grid2D {
   Vec2** data;
 
@@ -439,23 +443,24 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  float  cell  = grid->cell_size;
+  float   cell = grid->cell_size;
   size_t width = grid->number_of_cells_per_dimension;
 
   for (size_t k = 0; k < positions->size; k++) {
-    Vec2* circle = &(*positions)[k];
+    Vec2* point = &(*positions)[k];
 
-    float x = circle->x - left_boundary;
-    float y = circle->y - lower_boundary;
+    float x = point->x - left_boundary;
+    float y = point->y - lower_boundary;
 
     size_t i = round_down(x / cell);
     size_t j = round_down(y / cell);
 
     size_t index = i*width + j;
+
     assert(index < grid->number_of_cells);
     assert(grid->data[index] == NULL);
 
-    grid->data[index] = circle;
+    grid->data[index] = point;
   }
 }
 
@@ -464,7 +469,7 @@ bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
 }
 
-void naive_collect_points_to_graph(Graph* graph, dynamic_array<Vec2>* array, float radius, float L) {
+void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* array, float radius, float L) {
   const size_t N = graph->count;
 
   assert(array->size == N);
@@ -479,6 +484,53 @@ void naive_collect_points_to_graph(Graph* graph, dynamic_array<Vec2>* array, flo
         graph->connected_nodes[i][graph->connected_nodes_count[i]] = j;
         graph->connected_nodes_count[i] += 1;
         graph->graph_data++;
+      }
+    }
+  }
+}
+
+void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dynamic_array<Vec2>* array, float radius, float L) {
+  assert(array->size == graph->count);
+  assert(L < 2*radius); // otherwise number of neighbours should be higher than 8.
+
+  const int NUMBER_OF_NEIGHBOURS = 8; // @Incomplete: actually this number should depend on L value.
+
+  float left_boundary  = -1.0f;
+  float lower_boundary = -1.0f;
+
+  float  cell = grid->cell_size;
+  float width = grid->number_of_cells_per_dimension;
+  
+  for (size_t k = 0; k < array->size; k++) {
+    const Vec2* point = &(*array)[k];
+
+    float x = point->x - left_boundary;
+    float y = point->y - lower_boundary;
+
+    size_t i = round_down(x / cell);
+    size_t j = round_down(y / cell);
+
+    size_t index = i*width + j;
+    assert(grid->data[index] == point);
+
+    graph->connected_nodes[k] = graph->graph_data;
+
+    Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+1, j-1}, {i+1, j}, {i+1, j+1},
+                                                       {i,   j-1},           {i,   j+1},
+                                                       {i-1, j-1}, {i-1, j}, {i-1, j+1}, };
+
+    for (int count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
+      Grid_Position n = neighbours[count];
+
+      size_t    index = n.i*width + n.j;
+      Vec2* neighbour = grid->data[index];
+
+      if (neighbour) {
+        if (check_for_connection(*point, *neighbour, radius, L)) {
+          graph->connected_nodes[k][graph->connected_nodes_count[k]] = j;
+          graph->connected_nodes_count[k] += 1;
+          graph->graph_data++;
+        }
       }
     }
   }
@@ -511,41 +563,29 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
   }
 }
 
-/*
- TODO:
-  1) Algorithm to generate random points in specified area.
-  2) Collecting array of points to a graph.
-  3) Visualization (2D, 3D?)
 
- + Blue noise generation algorithm ?
-  ??? 
 
- + Acceleration structure ?
-  Octree
-  When all nodes are generated, we can create octree to be more efficient while creating a coupled graph.
-  But I have no idea how to use it properly.
 
- + What data structure to use for a graph ?
-  Let's mark all nodes with numbers (0, 1, 2, .., N) nodes.
-  And use an array of arrays:
-  [0] : [all edges connected to 0th node]
-  [1] : [all edges connected to 1st node]
-  [2] : [all edges connected to 2nd node]
-  ... 
-  [N] : [all edges connected to Nth node]
 
- Since there is only a constant number of surrounding nodes, we should use static arrays for all of them.
- Or should we allocate them dynamically? What is going to be more efficient / take less memory?
-*/
 
-/*
-  (N * 8)data                                       bytes of generated points (2D)
-  (N * 2)count + (N * 8)pointers + (N * 5 * 4)data  bytes of graph.                  // (5 is taken as an average number of connections per node)
 
-  38*N bytes for a program
 
-  if N == 10^7 => total 3.0 gb of data.
-*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #define make_string(x) { (x), sizeof(x)-1 }
 
@@ -668,7 +708,7 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.0001;
+  float radius = 0.001;
   float L      = radius + radius/10.0f;
   float packing_factor = 0.7;
 
@@ -762,7 +802,8 @@ int main(int argc, char** argv) {
       printf("[..] Collecting nodes to graph ... \n");
       printf("[..] Finished creating graph in := ");
       measure_scope();
-      naive_collect_points_to_graph(&graph, &positions, radius, L);
+      //naive_collect_points_to_graph(&graph, &positions, radius, L);
+      collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
     }
 
 
@@ -808,10 +849,12 @@ int main(int argc, char** argv) {
     {
       printf("[..] Percolating cluster size := %u\n", max_cluster);
       printf("[..] Number of clusters := %zu\n", cluster_sizes.size);
+      #if 0
       printf("[..] Cluster sizes := [");
       for (size_t i = 0; i < cluster_sizes.size; i++) {
         printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
       }
+      #endif
 
       puts("");
       puts("");
@@ -931,6 +974,7 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
+#if 0
     for (size_t i = 0; i < circles_array.size; i++) {
       float x = circles_array[i].x;
       float y = circles_array[i].y;
@@ -945,6 +989,7 @@ int main(int argc, char** argv) {
       glUniformMatrix4fv(uniform_mvp,   1, GL_FALSE, (float*) &mvp);
       glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
     }
+#endif
 
     if (r > 1.0f) {
       increment = -0.05f;
