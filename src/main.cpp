@@ -100,8 +100,13 @@ struct Grid_Position {
   size_t i, j;
 };
 
+struct Grid_Cell {
+  Vec2* point;
+  uint  node_id;
+};
+
 struct Grid2D {
-  Vec2** data;
+  Grid_Cell* data;
 
   size_t number_of_cells_per_dimension;
   size_t number_of_cells;
@@ -254,15 +259,22 @@ regenerate:
   return Vec2 { x, y };
 }
 
-void naive_random_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
+void naive_random_sampling(dynamic_array<Vec2>* array, float radius) {
+  const int       MAX_ALLOWED_ITERATIONS = 1e3;
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
 
-  for (size_t i = 0; i < N; i++) {
+  while (1) {
     Vec2 possible_point;
     bool allow_new_point;
 
-   regenerate: 
+    size_t iterations = 0;
 
+   regenerate: 
+    iterations++;
+
+    if (iterations > MAX_ALLOWED_ITERATIONS) break;
+
+    
     possible_point  = generate_random_vec2(radius);
     allow_new_point = true;
     for (size_t j = 0; j < array->size; j++) {
@@ -443,8 +455,8 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  float   cell = grid->cell_size;
-  size_t width = grid->number_of_cells_per_dimension;
+  float cell_size = grid->cell_size;
+  float     width = grid->number_of_cells_per_dimension;
 
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
@@ -452,15 +464,17 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
     float x = point->x - left_boundary;
     float y = point->y - lower_boundary;
 
-    size_t i = round_down(x / cell);
-    size_t j = round_down(y / cell);
+    size_t i = round_down(x / cell_size);
+    size_t j = round_down(y / cell_size);
 
     size_t index = i*width + j;
 
     assert(index < grid->number_of_cells);
-    assert(grid->data[index] == NULL);
+    assert(grid->data[index].point == NULL);
 
-    grid->data[index] = point;
+    Grid_Cell* cell = &grid->data[index];
+    cell->point   = point;
+    cell->node_id = k;
   }
 }
 
@@ -498,8 +512,8 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  float  cell = grid->cell_size;
-  float width = grid->number_of_cells_per_dimension;
+  float cell_size = grid->cell_size;
+  float     width = grid->number_of_cells_per_dimension;
   
   for (size_t k = 0; k < array->size; k++) {
     const Vec2* point = &(*array)[k];
@@ -507,27 +521,31 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     float x = point->x - left_boundary;
     float y = point->y - lower_boundary;
 
-    size_t i = round_down(x / cell);
-    size_t j = round_down(y / cell);
+    size_t i = round_down(x / cell_size);
+    size_t j = round_down(y / cell_size);
 
-    size_t index = i*width + j;
-    assert(grid->data[index] == point);
-
-    graph->connected_nodes[k] = graph->graph_data;
-
+    // @Incomplete: what about percolating cluster size? It's always either 4 or 8. Which means there is a bug in this code.
+    // @Incomplete: what about corner cases? For example if i == 0 and j == 0 -> then Grid_Position := {i-1, j-1} will be incorrect.
     Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+1, j-1}, {i+1, j}, {i+1, j+1},
                                                        {i,   j-1},           {i,   j+1},
                                                        {i-1, j-1}, {i-1, j}, {i-1, j+1}, };
 
+    size_t index = i*width + j;
+    assert(index < grid->number_of_cells);
+    assert(grid->data[index].point == point);
+
+    graph->connected_nodes[k] = graph->graph_data;
     for (int count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
       Grid_Position n = neighbours[count];
 
-      size_t    index = n.i*width + n.j;
-      Vec2* neighbour = grid->data[index];
+      size_t index = n.i*width + n.j;
+      assert(index < grid->number_of_cells);
 
-      if (neighbour) {
-        if (check_for_connection(*point, *neighbour, radius, L)) {
-          graph->connected_nodes[k][graph->connected_nodes_count[k]] = j;
+      Grid_Cell* cell = &grid->data[index];
+
+      if (cell->point) {
+        if (check_for_connection(*point, *cell->point, radius, L)) {
+          graph->connected_nodes[k][graph->connected_nodes_count[k]] = cell->node_id;
           graph->connected_nodes_count[k] += 1;
           graph->graph_data++;
         }
@@ -708,8 +726,8 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.001;
-  float L      = radius + radius/10.0f;
+  float radius = 0.01;
+  float L      = radius + radius/1.2;
   float packing_factor = 0.7;
 
   dynamic_array<Vec2> circles_array;
@@ -728,9 +746,9 @@ int main(int argc, char** argv) {
       printf("[..] Finished sampling points in := ");
 
       measure_scope();
-      //naive_random_sampling(&positions, N, radius);
+      naive_random_sampling(&positions, radius);
       //poisson_disk_sampling(&positions, N, radius);
-      tightest_packing_sampling(&positions, radius, packing_factor);
+      //tightest_packing_sampling(&positions, radius, packing_factor);
     }
     //assert(check_circles_are_inside_a_box(&positions, radius));
     //assert(check_circles_do_not_intersect_each_other(&positions, radius));
@@ -751,7 +769,7 @@ int main(int argc, char** argv) {
     assert(max_circles_area < max_window_area);
     assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
     assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+    //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
@@ -759,10 +777,10 @@ int main(int argc, char** argv) {
     grid.cell_size                     = radius;
     grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
     grid.number_of_cells               = max_window_area / square(grid.cell_size);
-    grid.data                          = (Vec2**) malloc(sizeof(Vec2*) * grid.number_of_cells);
+    grid.data                          = (Grid_Cell*) malloc(sizeof(Grid_Cell) * grid.number_of_cells);
 
     defer { free(grid.data); };
-    memset(grid.data, 0, sizeof(Vec2*) * grid.number_of_cells);
+    memset(grid.data, 0, sizeof(Grid_Cell) * grid.number_of_cells);
 
     {
       // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
@@ -772,6 +790,10 @@ int main(int argc, char** argv) {
       measure_scope();
       create_square_grid(&grid, &positions);
     }
+
+    printf("[..] Cell size       := %g\n", grid.cell_size);
+    printf("[..] Number of cells := %zu\n", grid.number_of_cells);
+    printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
 
 /*
     {
@@ -974,7 +996,7 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
-#if 0
+#if 1
     for (size_t i = 0; i < circles_array.size; i++) {
       float x = circles_array[i].x;
       float y = circles_array[i].y;
