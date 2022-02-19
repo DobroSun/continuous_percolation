@@ -97,7 +97,7 @@ struct Vec2 {
 };
 
 struct Grid_Position {
-  size_t i, j;
+  uint i, j;
 };
 
 struct Grid_Cell {
@@ -117,13 +117,13 @@ struct Grid2D {
 };
 
 struct Graph {
-  uint    count;
+  uint   count;
 
-  uint16* connected_nodes_count;
-  uint**  connected_nodes;
+  uint8* connected_nodes_count;
+  uint** connected_nodes; // @Incomplete: instead of using a pointer: uint**, we can go with just a uint* and address different nodes with indices, that will take 2 times less memory.
 
   // for graph creation.
-  uint*   graph_data;
+  uint*  graph_data;
 };
 
 struct Queue {
@@ -155,6 +155,14 @@ bool is_queue_empty(const Queue* queue) {
   assert(queue->last  <= queue->max_size);
   assert(queue->first <= queue->last);
   return queue->first == queue->last;
+}
+
+void add_connection_to_graph_node(Graph* graph, uint target_node, uint connected_node) {
+  assert(graph->connected_nodes_count[target_node]+1 < UINT8_MAX);
+
+  graph->connected_nodes[target_node][graph->connected_nodes_count[target_node]] = connected_node;
+  graph->connected_nodes_count[target_node] += 1;
+  graph->graph_data++;
 }
 
 float distance_squared(Vec2 a, Vec2 b) {
@@ -456,7 +464,7 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   float lower_boundary = -1.0f;
 
   float cell_size = grid->cell_size;
-  float     width = grid->number_of_cells_per_dimension;
+  size_t    width = grid->number_of_cells_per_dimension;
 
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
@@ -464,10 +472,10 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
     float x = point->x - left_boundary;
     float y = point->y - lower_boundary;
 
-    size_t i = round_down(x / cell_size);
-    size_t j = round_down(y / cell_size);
+    uint i = x / cell_size;
+    uint j = y / cell_size;
 
-    size_t index = i*width + j;
+    uint index = i*width + j;
 
     assert(index < grid->number_of_cells);
     assert(grid->data[index].point == NULL);
@@ -495,9 +503,7 @@ void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* arra
       if (i == j) continue; // nodes are the same => should be no connection with itself.
 
       if (check_for_connection((*array)[i], (*array)[j], radius, L)) {
-        graph->connected_nodes[i][graph->connected_nodes_count[i]] = j;
-        graph->connected_nodes_count[i] += 1;
-        graph->graph_data++;
+        add_connection_to_graph_node(graph, i, j);
       }
     }
   }
@@ -505,49 +511,57 @@ void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* arra
 
 void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dynamic_array<Vec2>* array, float radius, float L) {
   assert(array->size == graph->count);
-  assert(L < 2*radius); // otherwise number of neighbours should be higher than 8.
+  assert(L < 2*radius); // otherwise number of neighbours should be higher than 32.
 
-  const int NUMBER_OF_NEIGHBOURS = 8; // @Incomplete: actually this number should depend on L value.
+  const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
 
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
   float cell_size = grid->cell_size;
-  float     width = grid->number_of_cells_per_dimension;
+  size_t    width = grid->number_of_cells_per_dimension;
   
   for (size_t k = 0; k < array->size; k++) {
+    graph->connected_nodes[k] = graph->graph_data;
+
     const Vec2* point = &(*array)[k];
 
     float x = point->x - left_boundary;
     float y = point->y - lower_boundary;
 
-    size_t i = round_down(x / cell_size);
-    size_t j = round_down(y / cell_size);
+    uint i = (uint)(x / cell_size);
+    uint j = (uint)(y / cell_size);
 
-    // @Incomplete: what about percolating cluster size? It's always either 4 or 8. Which means there is a bug in this code.
-    // @Incomplete: what about corner cases? For example if i == 0 and j == 0 -> then Grid_Position := {i-1, j-1} will be incorrect.
-    Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+1, j-1}, {i+1, j}, {i+1, j+1},
-                                                       {i,   j-1},           {i,   j+1},
-                                                       {i-1, j-1}, {i-1, j}, {i-1, j+1}, };
-
-    size_t index = i*width + j;
+    uint index = i*width + j;
     assert(index < grid->number_of_cells);
     assert(grid->data[index].point == point);
 
-    graph->connected_nodes[k] = graph->graph_data;
-    for (int count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
-      Grid_Position n = neighbours[count];
+    // 
+    // @Incomplete: since we are using sqrt(2)*radius as a cell size, circles don't fit completely into a cell, so there are cases when we have to take more neighbours from each side, depending on how circle is placed in a particular cell
+    // Naive   approach: take 2 layers of neighbours. Total 32 possible neighbours per search.
+    // Another approach: divide a cell into 4 quadrants and figure out where our current circle is placed. Total 15 possible neighbours per search
+    // 
 
-      size_t index = n.i*width + n.j;
+    Grid_Position positions[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
+                                                      {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
+                                                      {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
+                                                      {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
+                                                      {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
+
+
+    for (uint count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
+      Grid_Position n = positions[count];
+
+      if (n.i >= width || n.j >= width) { continue; }
+
+      uint index = n.i*width + n.j;
       assert(index < grid->number_of_cells);
 
       Grid_Cell* cell = &grid->data[index];
-
+      
       if (cell->point) {
         if (check_for_connection(*point, *cell->point, radius, L)) {
-          graph->connected_nodes[k][graph->connected_nodes_count[k]] = cell->node_id;
-          graph->connected_nodes_count[k] += 1;
-          graph->graph_data++;
+          add_connection_to_graph_node(graph, k, cell->node_id);
         }
       }
     }
@@ -726,13 +740,14 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.01;
-  float L      = radius + radius/1.2;
+  float radius = 0.0005;
+  float L      = radius + radius/10.;
   float packing_factor = 0.7;
 
+#if 0 
   dynamic_array<Vec2> circles_array;
   defer { array_free(&circles_array); };
-
+#endif
   { // do_stuff() 
     uint seed = time(NULL);
     srand(seed);
@@ -746,9 +761,9 @@ int main(int argc, char** argv) {
       printf("[..] Finished sampling points in := ");
 
       measure_scope();
-      naive_random_sampling(&positions, radius);
+      //naive_random_sampling(&positions, radius);
       //poisson_disk_sampling(&positions, N, radius);
-      //tightest_packing_sampling(&positions, radius, packing_factor);
+      tightest_packing_sampling(&positions, radius, packing_factor);
     }
     //assert(check_circles_are_inside_a_box(&positions, radius));
     //assert(check_circles_do_not_intersect_each_other(&positions, radius));
@@ -769,19 +784,25 @@ int main(int argc, char** argv) {
     assert(max_circles_area < max_window_area);
     assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
     assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-    //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
     Grid2D grid; 
-    grid.cell_size                     = radius;
+    grid.cell_size                     = sqrt(2)*radius;
     grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
-    grid.number_of_cells               = max_window_area / square(grid.cell_size);
+    grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
     grid.data                          = (Grid_Cell*) malloc(sizeof(Grid_Cell) * grid.number_of_cells);
 
     defer { free(grid.data); };
     memset(grid.data, 0, sizeof(Grid_Cell) * grid.number_of_cells);
 
+    printf("[..]\n");
+    printf("[..] Cell size       := %g\n", grid.cell_size);
+    printf("[..] Number of cells := %zu\n", grid.number_of_cells);
+    printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
+
+#if 1
     {
       // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
       printf("[..]\n");
@@ -790,12 +811,9 @@ int main(int argc, char** argv) {
       measure_scope();
       create_square_grid(&grid, &positions);
     }
+#endif
 
-    printf("[..] Cell size       := %g\n", grid.cell_size);
-    printf("[..] Number of cells := %zu\n", grid.number_of_cells);
-    printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
-
-/*
+#if 0
     {
       printf("[..]\n");
       printf("[..] Random walk ... \n");
@@ -803,19 +821,19 @@ int main(int argc, char** argv) {
       measure_scope();
       do_random_walk(&positions);
     }
-*/
+#endif
 
 
     const size_t a_lot = 1e10; // ~ 10 gigabytes.
 
     Graph graph;
     graph.count = N;
-    graph.connected_nodes_count = (uint16*) malloc(a_lot);
-    graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(uint16) * N);
-    graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(uint*)  * N);
+    graph.connected_nodes_count = (uint8*) malloc(a_lot);
+    graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
+    graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
 
     defer { free(graph.connected_nodes_count); };
-    memset(graph.connected_nodes_count, 0, sizeof(uint16) * N);
+    memset(graph.connected_nodes_count, 0, sizeof(*graph.connected_nodes_count) * N);
 
     {
       // @Incomplete: use a grid to simplify algorithm.
@@ -828,6 +846,9 @@ int main(int argc, char** argv) {
       collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
     }
 
+#if 1
+    array_free(&positions);
+#endif
 
 
     dynamic_array<uint> cluster_sizes;
@@ -883,7 +904,9 @@ int main(int argc, char** argv) {
       puts("");
     }
 
+#if 0
     circles_array = positions;
+#endif
   }
 
 
@@ -996,7 +1019,7 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
-#if 1
+#if 0
     for (size_t i = 0; i < circles_array.size; i++) {
       float x = circles_array[i].x;
       float y = circles_array[i].y;
