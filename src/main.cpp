@@ -120,7 +120,11 @@ struct Graph {
   uint   count;
 
   uint8* connected_nodes_count;
-  uint** connected_nodes; // @Incomplete: instead of using a pointer: uint**, we can go with just a uint* and address different nodes with indices, that will take 2 times less memory.
+  uint** connected_nodes;
+  // 
+  // @Incomplete: instead of using a pointer: uint**, we can go with just a uint* and address different nodes with indices, that will take 2 times less memory.
+  // Approximately uint can address 4 billions of nodes, so for example if there is 6 connections per node, graph.count should not be greater than 700 million. So we can't address more circles than that number. (with a uint!) (pointers are fine).
+  // 
 
   // for graph creation.
   uint*  graph_data;
@@ -679,46 +683,32 @@ Vertex_And_Fragment_Shaders load_shaders(const char* filename) {
   return { shaders[0], shaders[1] };
 }
 
-unsigned compile_shader(string source, unsigned type) {
-  unsigned int id = glCreateShader(type);
-
-  int len = source.count;
-  glShaderSource(id, 1, &source.data, &len);
-  glCompileShader(id);
-
-  int status;
-  glGetShaderiv(id, GL_COMPILE_STATUS, &status);
-  if (!status) {
-    int length;
-    char* message;
-
-    glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
-
-    message = (char*) alloca(length);
-
-    glGetShaderInfoLog(id, length, &length, message);
-    glDeleteShader(id);
-
-    const char* shader_name = type == GL_VERTEX_SHADER ? "vertex" : "fragment";
-    printf("[..] Failed to compile %s shader!\n", shader_name);
-    puts(message);
-    return 0;
-  }
-  
-  return id;
-}
-
 unsigned create_shader(string vertex, string fragment) {
   unsigned program = glCreateProgram();
 
-  unsigned vs = compile_shader(vertex,   GL_VERTEX_SHADER);
-  unsigned fs = compile_shader(fragment, GL_FRAGMENT_SHADER);
+  unsigned vs = glCreateShader(GL_VERTEX_SHADER);
+  unsigned fs = glCreateShader(GL_FRAGMENT_SHADER);
 
-  if (!vs) return 0;
-  if (!fs) return 0;
+  int length_vs =   vertex.count;
+  int length_fs = fragment.count;
+
+  glShaderSource(vs, 1, &vertex.data,   &length_vs);
+  glShaderSource(fs, 1, &fragment.data, &length_fs);
+
+  glCompileShader(vs);
+  glCompileShader(fs);
+
+  int status_vs = 0;
+  int status_fs = 0;
+
+  glGetShaderiv(vs, GL_COMPILE_STATUS, &status_vs);
+  glGetShaderiv(fs, GL_COMPILE_STATUS, &status_fs);
+
+  if (!status_vs || !status_fs) { goto error; }
 
   glAttachShader(program, vs);
   glAttachShader(program, fs);
+
   glLinkProgram(program);
   glValidateProgram(program);
 
@@ -729,6 +719,29 @@ unsigned create_shader(string vertex, string fragment) {
   glDeleteShader(fs);
 
   return program;
+
+error:
+  int   message_size_vs;
+  int   message_size_fs;
+  char* message_vs;
+  char* message_fs;
+
+  if (!status_vs) glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &message_size_vs);
+  if (!status_fs) glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &message_size_fs);
+
+  if (!status_vs) message_vs = (char*) alloca(message_size_vs);
+  if (!status_fs) message_fs = (char*) alloca(message_size_fs);
+
+  if (!status_vs) glGetShaderInfoLog(vs, message_size_vs, &message_size_vs, message_vs);
+  if (!status_fs) glGetShaderInfoLog(fs, message_size_fs, &message_size_fs, message_fs);
+
+  if (!status_vs) glDeleteShader(vs);
+  if (!status_fs) glDeleteShader(fs);
+
+  if (!status_vs) printf("[..] Failed to compile vertex shader!\n%s",   message_vs);
+  if (!status_fs) printf("[..] Failed to compile fragment shader!\n%s", message_fs);
+  
+  return 0;
 }
 
 void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
@@ -740,11 +753,11 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.0005;
-  float L      = radius + radius/10.;
+  float radius = 0.05;
+  float L      = radius + radius/10.0f;
   float packing_factor = 0.7;
 
-#if 0 
+#if 1
   dynamic_array<Vec2> circles_array;
   defer { array_free(&circles_array); };
 #endif
@@ -784,7 +797,7 @@ int main(int argc, char** argv) {
     assert(max_circles_area < max_window_area);
     assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
     assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+    //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
@@ -802,7 +815,6 @@ int main(int argc, char** argv) {
     printf("[..] Number of cells := %zu\n", grid.number_of_cells);
     printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
 
-#if 1
     {
       // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
       printf("[..]\n");
@@ -811,7 +823,6 @@ int main(int argc, char** argv) {
       measure_scope();
       create_square_grid(&grid, &positions);
     }
-#endif
 
 #if 0
     {
@@ -846,7 +857,7 @@ int main(int argc, char** argv) {
       collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
     }
 
-#if 1
+#if 0
     array_free(&positions);
 #endif
 
@@ -904,9 +915,7 @@ int main(int argc, char** argv) {
       puts("");
     }
 
-#if 0
     circles_array = positions;
-#endif
   }
 
 
@@ -1019,7 +1028,7 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
-#if 0
+#if 1
     for (size_t i = 0; i < circles_array.size; i++) {
       float x = circles_array[i].x;
       float y = circles_array[i].y;
