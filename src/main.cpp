@@ -98,9 +98,14 @@ struct Vec2 {
 
 struct Grid_Position {
   uint i, j;
+  uint index;
 };
 
 struct Grid_Cell {
+  // 
+  // @Incomplete: we already have a node id in this struct, so why don't we just use it to get a circle on that cell? positions[node_id].
+  // Default value for node_id = 0xFFFFFFFF; which means there is no node. otherwise it is an index of a circle.
+  // 
   Vec2* point;
   uint  node_id;
 };
@@ -167,6 +172,23 @@ void add_connection_to_graph_node(Graph* graph, uint target_node, uint connected
   graph->connected_nodes[target_node][graph->connected_nodes_count[target_node]] = connected_node;
   graph->connected_nodes_count[target_node] += 1;
   graph->graph_data++;
+}
+
+Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
+  // @Incomplete: make all these *_boundary variables to be static & global.
+  float left_boundary  = -1.0f;
+  float lower_boundary = -1.0f;
+
+  float x = point.x - left_boundary;
+  float y = point.y - lower_boundary;
+
+  uint i = x / grid->cell_size;
+  uint j = y / grid->cell_size;
+
+  uint index = i*grid->number_of_cells_per_dimension + j;
+  assert(index < grid->number_of_cells);
+
+  return {i, j, index};
 }
 
 float distance_squared(Vec2 a, Vec2 b) {
@@ -249,8 +271,8 @@ regenerate:
   angle = rand();
   dist  = rand();
 
-  phi = TAU * angle / (double)(RAND_MAX+1);
-  ro  = (max_radius - min_radius) * dist / (double)(RAND_MAX+1) + min_radius;
+  phi = TAU * angle / (float)(RAND_MAX+1);
+  ro  = (max_radius - min_radius) * dist / (float)(RAND_MAX+1) + min_radius;
 
   assert(0          <= phi && phi <= TAU);
   assert(min_radius <= ro  && ro  <= max_radius);
@@ -258,7 +280,6 @@ regenerate:
   x = point.x + ro*cos(phi);
   y = point.y + ro*sin(phi);
 
-  // @Incomplete: assert on [-1.0f, 1.0f] boundaries.
   // @Hack: 
   if (!(-1.0f <= x-radius && x+radius <= 1.0f) || 
       !(-1.0f <= y-radius && y+radius <= 1.0f)) {
@@ -356,7 +377,7 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
 }
 
 #if 1
-void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, float packing_factor) {
+void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
   assert(array->size == 0);
 
   float left_boundary  = -1.0f;
@@ -368,6 +389,8 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, 
   // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
   float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
   float height = sqrt(3) * radius;
+
+  *max_random_walking_distance = sqrt(square(radius) + square(height));
 
   // centers of a circle.
   float x;
@@ -467,28 +490,49 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  float cell_size = grid->cell_size;
-  size_t    width = grid->number_of_cells_per_dimension;
-
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
 
-    float x = point->x - left_boundary;
-    float y = point->y - lower_boundary;
+    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
-    uint i = x / cell_size;
-    uint j = y / cell_size;
+    assert(grid->data[n.index].point == NULL);
 
-    uint index = i*width + j;
-
-    assert(index < grid->number_of_cells);
-    assert(grid->data[index].point == NULL);
-
-    Grid_Cell* cell = &grid->data[index];
+    Grid_Cell* cell = &grid->data[n.index];
     cell->point   = point;
     cell->node_id = k;
   }
 }
+
+void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float max_random_walking_distance) {
+
+  for (size_t i = 0; i < positions->size; i++) {
+
+    float distance  = max_random_walking_distance;
+    float direction = TAU * rand() / (float)(RAND_MAX+1);    
+    assert(0 <= direction && direction < TAU);
+
+    Vec2*     point = &(*positions)[i];
+    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
+
+    //
+    // @Incomplete:
+    // 1) get all cells along jumping direction.
+    // 2) somehow generate a distance to jump
+    //   a) do: distance /= 2, every time we failed to jump
+    //   b) find minimal distance before intersection with another point, do: rand() from 0 .. min_distance
+    // 3) process a jump by changing Vec2* point position. 
+    // 4) if we jumped to another cell we have to also modify Grid2D. (change point's cell).
+    // 5) goto 1;
+    // 
+
+    // 
+    // 1) Get all cells along jumping direction:
+    // Найди перпендикуляр от текущего направления прыжка. Затем бери все клетки лежащие внутри образовавшегося узла. A
+    // => all neighbours in that direction.
+    // 
+  }
+}
+
 
 
 bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
@@ -522,23 +566,15 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  float cell_size = grid->cell_size;
-  size_t    width = grid->number_of_cells_per_dimension;
+  size_t width = grid->number_of_cells_per_dimension;
   
   for (size_t k = 0; k < array->size; k++) {
     graph->connected_nodes[k] = graph->graph_data;
 
     const Vec2* point = &(*array)[k];
+    Grid_Position   n = get_circle_position_on_a_grid(grid, *point);
 
-    float x = point->x - left_boundary;
-    float y = point->y - lower_boundary;
-
-    uint i = (uint)(x / cell_size);
-    uint j = (uint)(y / cell_size);
-
-    uint index = i*width + j;
-    assert(index < grid->number_of_cells);
-    assert(grid->data[index].point == point);
+    assert(grid->data[n.index].point == point);
 
     // 
     // @Incomplete: since we are using sqrt(2)*radius as a cell size, circles don't fit completely into a cell, so there are cases when we have to take more neighbours from each side, depending on how circle is placed in a particular cell
@@ -546,15 +582,17 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     // Another approach: divide a cell into 4 quadrants and figure out where our current circle is placed. Total 15 possible neighbours per search
     // 
 
-    Grid_Position positions[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
-                                                      {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
-                                                      {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
-                                                      {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
-                                                      {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
+    uint i = n.i;
+    uint j = n.j;
+    Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
+                                                       {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
+                                                       {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
+                                                       {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
+                                                       {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
 
 
     for (uint count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
-      Grid_Position n = positions[count];
+      Grid_Position n = neighbours[count];
 
       if (n.i >= width || n.j >= width) { continue; }
 
@@ -753,9 +791,10 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.05;
+  float radius = 0.01;
   float L      = radius + radius/10.0f;
   float packing_factor = 0.7;
+  float max_random_walking_distance;
 
 #if 1
   dynamic_array<Vec2> circles_array;
@@ -776,10 +815,11 @@ int main(int argc, char** argv) {
       measure_scope();
       //naive_random_sampling(&positions, radius);
       //poisson_disk_sampling(&positions, N, radius);
-      tightest_packing_sampling(&positions, radius, packing_factor);
+      tightest_packing_sampling(&positions, &max_random_walking_distance, radius, packing_factor);
     }
     //assert(check_circles_are_inside_a_box(&positions, radius));
     //assert(check_circles_do_not_intersect_each_other(&positions, radius));
+
 
     const size_t N = positions.size;
     float one_dimension_range = 2.0f;
@@ -797,7 +837,7 @@ int main(int argc, char** argv) {
     assert(max_circles_area < max_window_area);
     assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
     assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-    //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
@@ -805,10 +845,10 @@ int main(int argc, char** argv) {
     grid.cell_size                     = sqrt(2)*radius;
     grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
     grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
-    grid.data                          = (Grid_Cell*) malloc(sizeof(Grid_Cell) * grid.number_of_cells);
+    grid.data                          = (Grid_Cell*) malloc(sizeof(*grid.data) * grid.number_of_cells);
 
     defer { free(grid.data); };
-    memset(grid.data, 0, sizeof(Grid_Cell) * grid.number_of_cells);
+    memset(grid.data, 0, sizeof(*grid.data) * grid.number_of_cells);
 
     printf("[..]\n");
     printf("[..] Cell size       := %g\n", grid.cell_size);
@@ -824,15 +864,13 @@ int main(int argc, char** argv) {
       create_square_grid(&grid, &positions);
     }
 
-#if 0
     {
       printf("[..]\n");
       printf("[..] Random walk ... \n");
       printf("[..] Finished random walk in := ");
       measure_scope();
-      do_random_walk(&positions);
+      process_random_walk(&grid, &positions, max_random_walking_distance);
     }
-#endif
 
 
     const size_t a_lot = 1e10; // ~ 10 gigabytes.
@@ -847,7 +885,6 @@ int main(int argc, char** argv) {
     memset(graph.connected_nodes_count, 0, sizeof(*graph.connected_nodes_count) * N);
 
     {
-      // @Incomplete: use a grid to simplify algorithm.
       printf("[..]\n");
       printf("[..] Successfully allocated 10 gigabytes of memory!\n");
       printf("[..] Collecting nodes to graph ... \n");
@@ -901,8 +938,8 @@ int main(int argc, char** argv) {
     assert(max_cluster);
 
     {
-      printf("[..] Percolating cluster size := %u\n", max_cluster);
-      printf("[..] Number of clusters := %zu\n", cluster_sizes.size);
+      printf("[..] Percolating cluster size := %u\n",  max_cluster);
+      printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
       #if 0
       printf("[..] Cluster sizes := [");
       for (size_t i = 0; i < cluster_sizes.size; i++) {
