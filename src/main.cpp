@@ -29,18 +29,27 @@ typedef uint64_t uint64;
 
 typedef uint32 uint;
 
-const double PI  = 3.14159265358979323846;
-const double TAU = 6.28318530717958647692;
-const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
-
-#define max(x, y)     ( (x) > (y) ? (x) : (y) )
-#define square(x)     ( (x) * (x) )
-#define round_down(x) ((size_t)(round((float)(x) + 0.5f) - 1))
-
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
 #include "dynamic_array.cpp"
 
+
+
+const double PI  = 3.14159265358979323846;
+const double TAU = 6.28318530717958647692;
+const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
+const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
+
+const float  left_boundary = -1.0f;
+const float right_boundary =  1.0f;
+const float lower_boundary = -1.0f;
+const float upper_boundary =  1.0f;
+
+#define max(x, y)     ( (x) > (y) ? (x) : (y) )
+#define square(x)     ( (x) * (x) )
+#define round_down(x) ( (size_t)(round((float)(x) + 0.5f) - 1) )
+#define array_size(x) ( sizeof( x )/sizeof( *(x) ) )
+#define make_string(x) { (x), sizeof(x)-1 }
 
 #define measure_scope() Timer ANONYMOUS_NAME
 
@@ -96,6 +105,10 @@ struct Vec2 {
   float x, y;
 };
 
+Vec2 operator+(Vec2 a, Vec2 b)  { return { a.x + b.x, a.y + b.y }; }
+Vec2 operator*(float c, Vec2 a) { return { c * a.x, c * a.y }; }
+Vec2 operator*(Vec2 a, float c) { return c * a; }
+
 struct Grid_Position {
   uint i, j;
   uint index;
@@ -143,6 +156,9 @@ struct Queue {
   uint max_size;
 };
 
+bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
+bool string_compare(string a, const char* b) { return string_compare(b, a); }
+
 void add_to_queue(Queue* queue, uint object) {
   assert(queue->last  <  queue->max_size);
   assert(queue->first <= queue->last);
@@ -175,10 +191,6 @@ void add_connection_to_graph_node(Graph* graph, uint target_node, uint connected
 }
 
 Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
-  // @Incomplete: make all these *_boundary variables to be static & global.
-  float left_boundary  = -1.0f;
-  float lower_boundary = -1.0f;
-
   float x = point.x - left_boundary;
   float y = point.y - lower_boundary;
 
@@ -191,12 +203,63 @@ Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
   return {i, j, index};
 }
 
+void get_all_neighbours_on_a_grid(const Grid2D* grid, Grid_Position n, Grid_Cell* data, uint* count) {
+  // 
+  // @Incomplete: since we are using sqrt(2)*radius as a cell size, circles don't fit completely into a cell, so there are cases when we have to take more neighbours from each side, depending on how circle is placed in a particular cell
+  // Naive   approach: take 2 layers of neighbours. Total 32 possible neighbours per search.
+  // Another approach: divide a cell into 4 quadrants and figure out where our current circle is placed. Total 15 possible neighbours per search
+  // 
+
+  assert(data);
+  assert(count);
+  *count = 0;
+
+  size_t width = grid->number_of_cells_per_dimension;
+
+  uint i = n.i;
+  uint j = n.j;
+  Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
+                                                     {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
+                                                     {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
+                                                     {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
+                                                     {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
+
+  for (size_t i = 0; i < array_size(neighbours); i++) {
+    Grid_Position n = neighbours[i];
+    neighbours[i].index = n.i * width + n.j;
+  }
+
+  for (size_t i = 0; i < array_size(neighbours); i++) {
+    Grid_Position n = neighbours[i];
+
+    if (n.i >= width || n.j >= width) { continue; }
+
+    size_t index = n.i * width + n.j;
+    assert(index < grid->number_of_cells);
+
+    Grid_Cell cell = grid->data[index];
+
+    if (cell.point) {
+      data[*count] = cell;
+      *count += 1;
+    }
+  }
+}
+
 float distance_squared(Vec2 a, Vec2 b) {
   float x  = (a.x - b.x);
   float y  = (a.y - b.y);
   float x2 = square(x);
   float y2 = square(y);
   return x2 + y2;
+}
+
+bool check_for_collision(Vec2 a, Vec2 b, float radius) {
+  return distance_squared(a, b) < square(2*radius);
+}
+
+bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
+  return distance_squared(a, b) < square(L + 2*radius);
 }
 
 bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
@@ -376,14 +439,8 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   }
 }
 
-#if 1
 void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
   assert(array->size == 0);
-
-  float left_boundary  = -1.0f;
-  float right_boundary =  1.0f;
-  float lower_boundary = -1.0f;
-  float upper_boundary =  1.0f;
 
   // target_radius^2 -- packing_factor.
   // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
@@ -413,78 +470,6 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_wal
     is_even = !is_even;
   }
 }
-#else
-void tightest_packing_sampling(dynamic_array<Vec2>* array, float target_radius, float packing_factor) {
-  float left_boundary  = -1.0f;
-  float right_boundary =  1.0f;
-  float lower_boundary = -1.0f;
-  float upper_boundary =  1.0f;
-
-  float height     = sqrt(3) * radius;
-  float last_place = upper_boundary - (radius + height);
-
-  float number_of_circles_per_x = (right_boundary - left_boundary)  / (2*radius);
-  float number_of_circles_per_y = (upper_boundary - lower_boundary) / (height);
-
-  // round down!
-  uint number_of_circles_per_layer0 = (uint) round(number_of_circles_per_x + 0.5f)        - 1;
-  uint number_of_circles_per_layer1 = (uint) round(number_of_circles_per_x + 0.5f - 0.5f) - 1;
-  uint number_of_layers             = (uint) round(number_of_circles_per_y + 0.5f)        - 1;
-
-  uint number_of_circles_per_2_layers = number_of_circles_per_layer0 + number_of_circles_per_layer1;
-  uint number_of_unfilled_layers = number_of_layers/2;
-
-  Vec2* copy_from = array->data;
-
-  float x;
-  float y;
-
-  x = left_boundary + radius;
-  y = lower_boundary + radius;
-  for (uint i = 0; i < number_of_circles_per_layer0; i++) { 
-    array_add(array, Vec2{x, y});
-    x += 2*radius;
-  }
-
-  x  = left_boundary + 2*radius;
-  y += height;
-  for (uint i = 0; i < number_of_circles_per_layer1; i++) {
-    array_add(array, Vec2{x, y});
-    x += 2*radius;
-  }
-
-  number_of_unfilled_layers--;
-
-  while (number_of_unfilled_layers) {
-    Vec2* to = copy_from + number_of_circles_per_2_layers;
-    memcpy(to, copy_from, sizeof(Vec2) * number_of_circles_per_2_layers);
-
-    for (uint i = 0; i < number_of_circles_per_2_layers; i++) {
-      to[i].y += 2*height;
-    }
-
-    array->size += number_of_circles_per_2_layers;
-    copy_from   += number_of_circles_per_2_layers;
-    y           += 2*height;
-    number_of_unfilled_layers--;
-  }
-
-  if (number_of_layers % 2) {
-    Vec2* to = copy_from + number_of_circles_per_2_layers;
-    memcpy(to, copy_from, sizeof(Vec2) * number_of_circles_per_layer0);
-
-    for (uint i = 0; i < number_of_circles_per_layer0; i++) {
-      to[i].y += 2*height;
-    }
-      
-    array->size += number_of_circles_per_layer0;
-    y += height;
-  }
-
-  assert(y < upper_boundary && y + 2*height > upper_boundary);
-}
-#endif
-
 
 void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   float left_boundary  = -1.0f;
@@ -503,41 +488,65 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   }
 }
 
-void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float max_random_walking_distance) {
+void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float radius, float max_random_walking_distance) {
+
+  uint count = 0;
+  Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
 
   for (size_t i = 0; i < positions->size; i++) {
+    Vec2* point = &(*positions)[i];
 
-    float distance  = max_random_walking_distance;
-    float direction = TAU * rand() / (float)(RAND_MAX+1);    
+    float     distance  = max_random_walking_distance;
+    float     direction = TAU * rand() / (float)(RAND_MAX+1);    
+    Vec2 unit_direction = { cos(direction), sin(direction) };
+
     assert(0 <= direction && direction < TAU);
 
-    Vec2*     point = &(*positions)[i];
-    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
+    Vec2 jump_to;
 
-    //
+  jump:
+    jump_to = *point + distance*unit_direction;
+
+    // 
     // @Incomplete:
-    // 1) get all cells along jumping direction.
-    // 2) somehow generate a distance to jump
-    //   a) do: distance /= 2, every time we failed to jump
-    //   b) find minimal distance before intersection with another point, do: rand() from 0 .. min_distance
-    // 3) process a jump by changing Vec2* point position. 
-    // 4) if we jumped to another cell we have to also modify Grid2D. (change point's cell).
-    // 5) goto 1;
+    // Have some iteration count and condition to break from this endless goto's.
     // 
 
     // 
-    // 1) Get all cells along jumping direction:
-    // Найди перпендикуляр от текущего направления прыжка. Затем бери все клетки лежащие внутри образовавшегося узла. A
-    // => all neighbours in that direction.
+    // @Incomplete: what about range checks?
+    // Right now we can try to jump outside of a box.
+    // clamp(...)
     // 
+
+    // 
+    // @Incomplete: oh my god. 
+    // 
+
+    Grid_Position n = get_circle_position_on_a_grid(grid, jump_to);
+    get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
+
+    bool can_place_a_point = true;
+
+    for (uint c = 0; c < count; c++) {
+      Grid_Cell cell = neighbours[c];
+      if (check_for_collision(jump_to, *cell.point, radius)) {
+        can_place_a_point = false;
+        break;
+      }
+    }
+
+    if (can_place_a_point) {
+      // 
+      // @Incomplete: check if a jump_to has the same Grid_Position as point. If it doesn't than move it to another cell on a Grid2D!!!
+      // 
+      *point = jump_to;
+      
+    } else {
+      goto jump;
+    }
   }
 }
 
-
-
-bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
-  return distance_squared(a, b) < square(L + 2*radius);
-}
 
 void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* array, float radius, float L) {
   const size_t N = graph->count;
@@ -561,12 +570,12 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   assert(array->size == graph->count);
   assert(L < 2*radius); // otherwise number of neighbours should be higher than 32.
 
-  const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
-
   float left_boundary  = -1.0f;
   float lower_boundary = -1.0f;
 
-  size_t width = grid->number_of_cells_per_dimension;
+  uint count = 0;
+  Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
+
   
   for (size_t k = 0; k < array->size; k++) {
     graph->connected_nodes[k] = graph->graph_data;
@@ -576,35 +585,13 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
 
     assert(grid->data[n.index].point == point);
 
-    // 
-    // @Incomplete: since we are using sqrt(2)*radius as a cell size, circles don't fit completely into a cell, so there are cases when we have to take more neighbours from each side, depending on how circle is placed in a particular cell
-    // Naive   approach: take 2 layers of neighbours. Total 32 possible neighbours per search.
-    // Another approach: divide a cell into 4 quadrants and figure out where our current circle is placed. Total 15 possible neighbours per search
-    // 
+    get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
 
-    uint i = n.i;
-    uint j = n.j;
-    Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
-                                                       {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
-                                                       {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
-                                                       {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
-                                                       {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
+    for (uint c = 0; c < count; c++) {
+      Grid_Cell cell = neighbours[c];
 
-
-    for (uint count = 0; count < NUMBER_OF_NEIGHBOURS; count++) {
-      Grid_Position n = neighbours[count];
-
-      if (n.i >= width || n.j >= width) { continue; }
-
-      uint index = n.i*width + n.j;
-      assert(index < grid->number_of_cells);
-
-      Grid_Cell* cell = &grid->data[index];
-      
-      if (cell->point) {
-        if (check_for_connection(*point, *cell->point, radius, L)) {
-          add_connection_to_graph_node(graph, k, cell->node_id);
-        }
+      if (check_for_connection(*point, *cell.point, radius, L)) {
+        add_connection_to_graph_node(graph, k, cell.node_id);
       }
     }
   }
@@ -660,11 +647,6 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
 
 
 
-
-#define make_string(x) { (x), sizeof(x)-1 }
-
-static bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
-static bool string_compare(string a, const char* b) { return string_compare(b, a); }
 
 string read_entire_file(const char* filename) {
   File file;
@@ -869,7 +851,7 @@ int main(int argc, char** argv) {
       printf("[..] Random walk ... \n");
       printf("[..] Finished random walk in := ");
       measure_scope();
-      process_random_walk(&grid, &positions, max_random_walking_distance);
+      process_random_walk(&grid, &positions, radius, max_random_walking_distance);
     }
 
 
@@ -1066,6 +1048,10 @@ int main(int argc, char** argv) {
     glClear(GL_COLOR_BUFFER_BIT);
 
 #if 1
+    // 
+    // @Incomplete: batch rendering...
+    // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
+    // 
     for (size_t i = 0; i < circles_array.size; i++) {
       float x = circles_array[i].x;
       float y = circles_array[i].y;
