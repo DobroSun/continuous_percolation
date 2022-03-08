@@ -117,7 +117,6 @@ Vec2 operator*(Vec2 a, float c) { return c * a; }
 
 struct Grid_Position {
   uint i, j;
-  uint index;
 };
 
 typedef uint Grid_Cell;
@@ -195,10 +194,13 @@ Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
   uint i = x / grid->cell_size;
   uint j = y / grid->cell_size;
 
-  uint index = i*grid->number_of_cells_per_dimension + j;
-  assert(index < grid->number_of_cells);
+  return { i, j };
+}
 
-  return {i, j, index};
+uint get_circle_id_on_a_grid(const Grid2D* grid, Vec2 point) {
+  Grid_Position pos = get_circle_position_on_a_grid(grid, point);
+
+  return pos.i * grid->number_of_cells_per_dimension + pos.j;
 }
 
 void get_all_neighbours_on_a_grid(const Grid2D* grid, Grid_Position n, Grid_Cell* data, uint* count) {
@@ -222,17 +224,14 @@ void get_all_neighbours_on_a_grid(const Grid2D* grid, Grid_Position n, Grid_Cell
                                                      {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
                                                      {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
 
-  for (size_t i = 0; i < array_size(neighbours); i++) {
-    Grid_Position n = neighbours[i];
-    neighbours[i].index = n.i * width + n.j;
-  }
+
 
   for (size_t i = 0; i < array_size(neighbours); i++) {
     Grid_Position n = neighbours[i];
 
     if (n.i >= width || n.j >= width) { continue; }
 
-    size_t index = n.i * width + n.j;
+    size_t index = n.i*width + n.j;
     assert(index < grid->number_of_cells);
 
     Grid_Cell cell_id = grid->data[index];
@@ -250,10 +249,6 @@ float distance_squared(Vec2 a, Vec2 b) {
   float x2 = square(x);
   float y2 = square(y);
   return x2 + y2;
-}
-
-bool check_for_collision(Vec2 a, Vec2 b, float radius) {
-  return distance_squared(a, b) < square(2*radius);
 }
 
 bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
@@ -285,13 +280,6 @@ bool check_circles_do_not_intersect_each_other(dynamic_array<Vec2>* array, float
 
       double     dist2 = sqrt(dist1);
       double min_dist2 = radius + radius;
-
-      #if 0
-      printf("(i, j) := (%zu, %zu)\n", i, j);
-      printf("(given, expected) := (%.17g, %.17g)\n", dist1, min_dist1);
-      printf("(given, expected) := (%.17g, %.17g)\n", dist2, min_dist2);
-      printf("[..]\n");
-      #endif
 
       assert(dist1 >= min_dist1);
       assert(dist2 >= min_dist2);
@@ -473,10 +461,10 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
 
-    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
+    uint n = get_circle_id_on_a_grid(grid, *point);
 
-    assert(grid->data[n.index] == CELL_IS_NOT_OCCUPIED);
-    grid->data[n.index] = k;
+    assert(grid->data[n] == CELL_IS_NOT_OCCUPIED);
+    grid->data[n] = k;
   }
 }
 
@@ -510,11 +498,11 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
     jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
 
 
-    Grid_Position p = get_circle_position_on_a_grid(grid, *point);
-    Grid_Position n = get_circle_position_on_a_grid(grid, jump_to);
+    uint p = get_circle_id_on_a_grid(grid, *point);
+    uint n = get_circle_id_on_a_grid(grid, jump_to);
 
-    Grid_Cell* previous_id = &grid->data[p.index];
-    Grid_Cell* next_id     = &grid->data[n.index];
+    Grid_Cell* previous_id = &grid->data[p];
+    Grid_Cell* next_id     = &grid->data[n];
     bool cell_is_not_occupied = *next_id == CELL_IS_NOT_OCCUPIED;
     
     if (cell_is_not_occupied) {
@@ -526,7 +514,7 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
         *previous_id = CELL_IS_NOT_OCCUPIED;
       }
     } else {
-      distance /= 2.0f;
+      distance /= 2.0f; // @Incomplete: we should probably do rand() again, not just ... /= 2.0f.
       goto jump;
     }
   }
@@ -563,9 +551,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     graph->connected_nodes[k] = graph->graph_data;
 
     const Vec2* point = &(*array)[k];
-    Grid_Position   n = get_circle_position_on_a_grid(grid, *point);
-
-    assert(grid->data[n.index] == k);
+    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
     get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
 
