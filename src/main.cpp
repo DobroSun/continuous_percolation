@@ -515,9 +515,9 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
 
     Grid_Cell* previous_id = &grid->data[p.index];
     Grid_Cell* next_id     = &grid->data[n.index];
-    bool cell_is_occupied = *next_id != CELL_IS_NOT_OCCUPIED;
+    bool cell_is_not_occupied = *next_id == CELL_IS_NOT_OCCUPIED;
     
-    if (!cell_is_occupied) {
+    if (cell_is_not_occupied) {
       *point = jump_to;
 
       if (*previous_id != *next_id) {
