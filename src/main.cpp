@@ -38,7 +38,9 @@ typedef uint32 uint;
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
 const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
+
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
+const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
 
 const float  left_boundary = -1.0f;
 const float right_boundary =  1.0f;
@@ -118,15 +120,7 @@ struct Grid_Position {
   uint index;
 };
 
-struct Grid_Cell {
-  // 
-  // @Incomplete: we already have a node id in this struct, so why don't we just use it to get a circle on that cell? positions[node_id].
-  // Default value for node_id = 0xFFFFFFFF; which means there is no node. otherwise it is an index of a circle.
-  // 
-  Vec2* point;
-  uint  node_id;
-};
-
+typedef uint Grid_Cell;
 struct Grid2D {
   Grid_Cell* data;
 
@@ -241,10 +235,10 @@ void get_all_neighbours_on_a_grid(const Grid2D* grid, Grid_Position n, Grid_Cell
     size_t index = n.i * width + n.j;
     assert(index < grid->number_of_cells);
 
-    Grid_Cell cell = grid->data[index];
+    Grid_Cell cell_id = grid->data[index];
 
-    if (cell.point) {
-      data[*count] = cell;
+    if (cell_id != CELL_IS_NOT_OCCUPIED) {
+      data[*count] = cell_id;
       *count += 1;
     }
   }
@@ -481,11 +475,8 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
 
     Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
-    assert(grid->data[n.index].point == NULL);
-
-    Grid_Cell* cell = &grid->data[n.index];
-    cell->point   = point;
-    cell->node_id = k;
+    assert(grid->data[n.index] == CELL_IS_NOT_OCCUPIED);
+    grid->data[n.index] = k;
   }
 }
 
@@ -522,18 +513,17 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
     Grid_Position p = get_circle_position_on_a_grid(grid, *point);
     Grid_Position n = get_circle_position_on_a_grid(grid, jump_to);
 
-    Grid_Cell* previous = &grid->data[p.index];
-    Grid_Cell* next     = &grid->data[n.index];
-    bool cell_is_occupied = next->point != NULL;
+    Grid_Cell* previous_id = &grid->data[p.index];
+    Grid_Cell* next_id     = &grid->data[n.index];
+    bool cell_is_occupied = *next_id != CELL_IS_NOT_OCCUPIED;
     
     if (!cell_is_occupied) {
       *point = jump_to;
 
-      if (previous != next) {
-        assert(next->point   == NULL);
-        assert(next->node_id == 0);
-        *next = *previous;
-        *previous = {};
+      if (*previous_id != *next_id) {
+        assert(*next_id == CELL_IS_NOT_OCCUPIED);
+        *next_id     = *previous_id;
+        *previous_id = CELL_IS_NOT_OCCUPIED;
       }
     } else {
       distance /= 2.0f;
@@ -575,15 +565,18 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     const Vec2* point = &(*array)[k];
     Grid_Position   n = get_circle_position_on_a_grid(grid, *point);
 
-    assert(grid->data[n.index].point == point);
+    assert(grid->data[n.index] == k);
 
     get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
 
     for (uint c = 0; c < count; c++) {
-      Grid_Cell cell = neighbours[c];
+      Grid_Cell cell_id = neighbours[c];
 
-      if (check_for_connection(*point, *cell.point, radius, L)) {
-        add_connection_to_graph_node(graph, k, cell.node_id);
+      assert(cell_id != CELL_IS_NOT_OCCUPIED);
+      Vec2 neighbour = (*array)[cell_id];
+
+      if (check_for_connection(*point, neighbour, radius, L)) {
+        add_connection_to_graph_node(graph, k, cell_id);
       }
     }
   }
@@ -775,7 +768,8 @@ int main(int argc, char** argv) {
   dynamic_array<Vec2> circles_array;
   defer { array_free(&circles_array); };
 #endif
-  { // do_stuff() 
+
+  {
     uint seed = time(NULL);
     srand(seed);
 
@@ -823,7 +817,7 @@ int main(int argc, char** argv) {
     grid.data                          = (Grid_Cell*) malloc(sizeof(*grid.data) * grid.number_of_cells);
 
     defer { free(grid.data); };
-    memset(grid.data, 0, sizeof(*grid.data) * grid.number_of_cells);
+    memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
 
     printf("[..]\n");
     printf("[..] Cell size       := %g\n", grid.cell_size);
