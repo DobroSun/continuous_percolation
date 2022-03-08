@@ -12,9 +12,9 @@
 #include <ctime>
 #include <cstdint>
 
-#include <memory> // @Incomplete: <- This is C++ std file. I can't figure out a C include file for alloca!
 #include <chrono>
 
+#include "malloc.h"
 #include "windows.h"
 
 typedef int8_t  int8;
@@ -45,7 +45,11 @@ const float right_boundary =  1.0f;
 const float lower_boundary = -1.0f;
 const float upper_boundary =  1.0f;
 
-#define max(x, y)     ( (x) > (y) ? (x) : (y) )
+#define max(x, y)        ( (x) > (y) ? (x) : (y) )
+#define min(x, y)        ( (x) < (y) ? (x) : (y) )
+
+#define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
+
 #define square(x)     ( (x) * (x) )
 #define round_down(x) ( (size_t)(round((float)(x) + 0.5f) - 1) )
 #define array_size(x) ( sizeof( x )/sizeof( *(x) ) )
@@ -472,9 +476,6 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_wal
 }
 
 void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
-  float left_boundary  = -1.0f;
-  float lower_boundary = -1.0f;
-
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
 
@@ -504,44 +505,38 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
 
     Vec2 jump_to;
 
+    int iteraction_counter = 0;
+
   jump:
-    jump_to = *point + distance*unit_direction;
-
-    // 
-    // @Incomplete:
-    // Have some iteration count and condition to break from this endless goto's.
-    // 
-
-    // 
-    // @Incomplete: what about range checks?
-    // Right now we can try to jump outside of a box.
-    // clamp(...)
-    // 
-
-    // 
-    // @Incomplete: oh my god. 
-    // 
-
-    Grid_Position n = get_circle_position_on_a_grid(grid, jump_to);
-    get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
-
-    bool can_place_a_point = true;
-
-    for (uint c = 0; c < count; c++) {
-      Grid_Cell cell = neighbours[c];
-      if (check_for_collision(jump_to, *cell.point, radius)) {
-        can_place_a_point = false;
-        break;
-      }
+    iteraction_counter++;
+    if (iteraction_counter > 6) { // @Incomplete: think about it later.
+      continue;
     }
 
-    if (can_place_a_point) {
-      // 
-      // @Incomplete: check if a jump_to has the same Grid_Position as point. If it doesn't than move it to another cell on a Grid2D!!!
-      // 
+    jump_to = *point + distance*unit_direction;
+
+    jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
+    jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
+
+
+    Grid_Position p = get_circle_position_on_a_grid(grid, *point);
+    Grid_Position n = get_circle_position_on_a_grid(grid, jump_to);
+
+    Grid_Cell* previous = &grid->data[p.index];
+    Grid_Cell* next     = &grid->data[n.index];
+    bool cell_is_occupied = next->point != NULL;
+    
+    if (!cell_is_occupied) {
       *point = jump_to;
-      
+
+      if (previous != next) {
+        assert(next->point   == NULL);
+        assert(next->node_id == 0);
+        *next = *previous;
+        *previous = {};
+      }
     } else {
+      distance /= 2.0f;
       goto jump;
     }
   }
@@ -569,9 +564,6 @@ void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* arra
 void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dynamic_array<Vec2>* array, float radius, float L) {
   assert(array->size == graph->count);
   assert(L < 2*radius); // otherwise number of neighbours should be higher than 32.
-
-  float left_boundary  = -1.0f;
-  float lower_boundary = -1.0f;
 
   uint count = 0;
   Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
@@ -671,34 +663,35 @@ Vertex_And_Fragment_Shaders load_shaders(const char* filename) {
   string s = read_entire_file(filename); // @MemoryLeak: 
   if (!s.count) return {};               // @MemoryLeak: 
 
+  static const uint TAG_NOT_FOUND  = (uint) -1;
   static const string vertex_tag   = make_string("#vertex");
   static const string fragment_tag = make_string("#fragment");
   static const string tags[]       = { vertex_tag, fragment_tag, make_string("") };
 
-  string shaders[2];
+  string shaders[2] = {};
 
-  size_t index  = 0;
-  char*  cursor = s.data;
-
+  uint    index  = TAG_NOT_FOUND;
+  char*   cursor = s.data;
   string* current_shader = NULL;
 
   while (*cursor != '\0') {
-    if (string_compare(cursor, tags[index])) {
-      cursor += tags[index].count;
+    index = TAG_NOT_FOUND;
+    index = string_compare(cursor, tags[0]) ? 0 : index;
+    index = string_compare(cursor, tags[1]) ? 1 : index;
 
+    if (index == TAG_NOT_FOUND) {
+      if (current_shader) current_shader->count++;
+      cursor++;
+    } else {
+      cursor += tags[index].count;
       current_shader = &shaders[index];
       current_shader->data  = cursor;
       current_shader->count = 0;
-      index++;
-
-    } else {
-      if (current_shader) current_shader->count++;
-      cursor++;
     }
   }
 
-  assert(index == 2 && "shader file should contain #vertex and #fragment tags in order!");
-  assert(shaders[0].count != 0 && shaders[1].count != 0 && "vertex and fragment shaders should not be empty!");
+  assert(shaders[0].data && shaders[0].count &&   "vertex shader was not found in a file! it should be specified with a '#vertex' tag");
+  assert(shaders[1].data && shaders[1].count && "fragment shader was not found in a file! it should be specified with a '#fragment' tag");
 
   return { shaders[0], shaders[1] };
 }
@@ -845,6 +838,7 @@ int main(int argc, char** argv) {
       measure_scope();
       create_square_grid(&grid, &positions);
     }
+
 
     {
       printf("[..]\n");
