@@ -80,7 +80,7 @@ struct Timer {
 
   Timer()  {
     start = std::chrono::steady_clock::now();
-	}
+  }
 
   ~Timer() { 
     end = std::chrono::steady_clock::now(); 
@@ -742,6 +742,85 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
   __debugbreak(); // @MSVC_Only: 
 }
 
+
+struct Create_Vertex_Buffer {
+  dynamic_array<float> vertices;
+};
+
+struct Vertex_Attribute {
+  uint16 attribute_index = 0;
+  uint16 number_of_values_in_an_attribute = 0;                         // should be 1, 2, 3 or 4.
+  uint16 size_of_one_vertex_in_bytes = 0;
+  uint16 size_to_an_attribute_from_beginning_of_a_vertex_in_bytes = 0; // should be 0 if there is no attribute.
+
+  GLenum attribute_type = GL_FLOAT;
+  bool is_normalized = false;                                          // should be false if a value is normalized.
+};
+
+struct Shader {
+  uint program = 0;
+  void (*setup_uniform)(void*) = NULL;
+  void* data;
+};
+
+struct Basic_Shader_Data {
+  int uniform_color = 0;
+  int uniform_mvp   = 0;
+
+  float color[4];
+  glm::mat4 mvp;
+};
+
+void add_vertex_attribute(Vertex_Attribute va) {
+  glEnableVertexAttribArray(va.attribute_index);
+  glVertexAttribPointer(va.attribute_index, 
+                        va.number_of_values_in_an_attribute,
+                        va.attribute_type,
+                        va.is_normalized,
+                        va.size_of_one_vertex_in_bytes,
+                        (const void*) va.size_to_an_attribute_from_beginning_of_a_vertex_in_bytes);
+}
+
+uint create_vertex_array() {
+  
+  uint buffer;
+  glGenVertexArrays(1, &buffer);
+  glBindVertexArray(buffer);
+
+  return buffer;
+}
+
+uint create_vertex_buffer(Create_Vertex_Buffer vbo) {
+  dynamic_array<float> vertices = vbo.vertices;
+
+  uint buffer;
+  glGenBuffers(1, &buffer);
+  glBindBuffer(GL_ARRAY_BUFFER, buffer);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(*vertices.data) * vertices.size, vertices.data, GL_STATIC_DRAW);
+
+  // @Incomplete: we have to somehow know if the data is allocated dynamically, or statically. Maybe have a flag in dynamic_array that is going to say that. Then we won't need to deallocate that for static data.
+  array_free(&vertices);
+  return buffer;
+}
+
+void bind_vertex_array(uint vao) {
+  glBindVertexArray(vao);
+}
+
+void bind_shader(Shader shader) {
+  glUseProgram(shader.program);
+  shader.setup_uniform(shader.data);
+}
+
+void basic_shader_uniform(void* data) {
+  Basic_Shader_Data* s = (Basic_Shader_Data*) data;
+
+  glUniform4f       (s->uniform_color, s->color[0], s->color[1], s->color[2], s->color[3]);
+  glUniformMatrix4fv(s->uniform_mvp,   1, GL_FALSE, (float*) &s->mvp);
+}
+
+
+
 int main(int argc, char** argv) {
   init_filesystem_api();
 
@@ -750,166 +829,157 @@ int main(int argc, char** argv) {
   float packing_factor = 0.7;
   float max_random_walking_distance;
 
-#if 1
-  dynamic_array<Vec2> circles_array;
-  defer { array_free(&circles_array); };
-#endif
+
+  uint seed = time(NULL);
+  srand(seed);
+
+  dynamic_array<Vec2> positions;
+  array_reserve(&positions, 200000000);
+
+  defer { array_free(&positions); };
 
   {
-    uint seed = time(NULL);
-    srand(seed);
+    printf("[..] Generating nodes ... \n");
+    printf("[..] Finished sampling points in := ");
 
-
-    dynamic_array<Vec2> positions;
-    array_reserve(&positions, 200000000);
-
-    {
-      printf("[..] Generating nodes ... \n");
-      printf("[..] Finished sampling points in := ");
-
-      measure_scope();
-      //naive_random_sampling(&positions, radius);
-      //poisson_disk_sampling(&positions, N, radius);
-      tightest_packing_sampling(&positions, &max_random_walking_distance, radius, packing_factor);
-    }
-    //assert(check_circles_are_inside_a_box(&positions, radius));
-    //assert(check_circles_do_not_intersect_each_other(&positions, radius));
-
-
-    const size_t N = positions.size;
-    float one_dimension_range = 2.0f;
-    float max_window_area  = 2.0f * 2.0f;
-    float max_circles_area = positions.size * PI * square(radius);
-    float experimental_packing_factor = max_circles_area / max_window_area;
-
-    printf("[..]\n");
-    printf("[..] Radius of a circle   := %g\n", radius);
-    printf("[..] Connection radius(L) := %g\n", L);
-    printf("{..] Packing factor       := %g\n", packing_factor);
-    printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
-    printf("[..] Generated points     := %zu\n", positions.size);
-
-    assert(max_circles_area < max_window_area);
-    assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
-    assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-    assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
-
-
-
-    Grid2D grid; 
-    grid.cell_size                     = sqrt(2)*radius;
-    grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
-    grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
-    grid.data                          = (Grid_Cell*) malloc(sizeof(*grid.data) * grid.number_of_cells);
-
-    defer { free(grid.data); };
-    memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
-
-    printf("[..]\n");
-    printf("[..] Cell size       := %g\n", grid.cell_size);
-    printf("[..] Number of cells := %zu\n", grid.number_of_cells);
-    printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
-
-    {
-      // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
-      printf("[..]\n");
-      printf("[..] Collecting nodes to a grid ... \n");
-      printf("[..] Finished creating a grid in := ");
-      measure_scope();
-      create_square_grid(&grid, &positions);
-    }
-
-
-    {
-      printf("[..]\n");
-      printf("[..] Random walk ... \n");
-      printf("[..] Finished random walk in := ");
-      measure_scope();
-      process_random_walk(&grid, &positions, radius, max_random_walking_distance);
-    }
-
-
-    const size_t a_lot = 1e10; // ~ 10 gigabytes.
-
-    Graph graph;
-    graph.count = N;
-    graph.connected_nodes_count = (uint8*) malloc(a_lot);
-    graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
-    graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
-
-    defer { free(graph.connected_nodes_count); };
-    memset(graph.connected_nodes_count, 0, sizeof(*graph.connected_nodes_count) * N);
-
-    {
-      printf("[..]\n");
-      printf("[..] Successfully allocated 10 gigabytes of memory!\n");
-      printf("[..] Collecting nodes to graph ... \n");
-      printf("[..] Finished creating graph in := ");
-      measure_scope();
-      //naive_collect_points_to_graph(&graph, &positions, radius, L);
-      collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
-    }
-
-#if 0
-    array_free(&positions);
-#endif
-
-
-    dynamic_array<uint> cluster_sizes;
-    defer { array_free(&cluster_sizes); };
-
-    bool* hash_table = (bool*) malloc(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
-
-    defer { free(hash_table); };
-    memset(hash_table, false, sizeof(bool) * N);
-
-    Queue queue;
-    queue.data     = (uint*) malloc(sizeof(uint) * N);
-    queue.first    = 0;
-    queue.last     = 0;
-    queue.max_size = N;
-
-    defer { free(queue.data); };
-
-    {
-      printf("[..]\n");
-      printf("[..] Starting BFS ... \n");
-      printf("[..] Finished BFS in := ");
-      measure_scope();
-
-      for (size_t i = 0; i < graph.count; i++) {
-        assert(is_queue_empty(&queue));
-        if (!hash_table[i]) {
-          breadth_first_search(&graph, &queue, hash_table, i, &cluster_sizes);
-        }
-      }
-    }
-    //assert(check_hash_table_is_filled_up(hash_table, N));
-
-    // Find the biggest cluster.
-    uint max_cluster = cluster_sizes[0];
-    for (size_t i = 0; i < cluster_sizes.size; i++) {
-      max_cluster = max(cluster_sizes[i], max_cluster);
-    }
-    assert(max_cluster);
-
-    {
-      printf("[..] Percolating cluster size := %u\n",  max_cluster);
-      printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
-      #if 0
-      printf("[..] Cluster sizes := [");
-      for (size_t i = 0; i < cluster_sizes.size; i++) {
-        printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
-      }
-      #endif
-
-      puts("");
-      puts("");
-      puts("");
-    }
-
-    circles_array = positions;
+    measure_scope();
+    //naive_random_sampling(&positions, radius);
+    //poisson_disk_sampling(&positions, N, radius);
+    tightest_packing_sampling(&positions, &max_random_walking_distance, radius, packing_factor);
   }
+  //assert(check_circles_are_inside_a_box(&positions, radius));
+  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
+
+
+  const size_t N = positions.size;
+  float one_dimension_range = 2.0f;
+  float max_window_area  = 2.0f * 2.0f;
+  float max_circles_area = positions.size * PI * square(radius);
+  float experimental_packing_factor = max_circles_area / max_window_area;
+
+  printf("[..]\n");
+  printf("[..] Radius of a circle   := %g\n", radius);
+  printf("[..] Connection radius(L) := %g\n", L);
+  printf("{..] Packing factor       := %g\n", packing_factor);
+  printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
+  printf("[..] Generated points     := %zu\n", positions.size);
+
+  assert(max_circles_area < max_window_area);
+  assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
+  assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
+  assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+
+
+
+  Grid2D grid; 
+  grid.cell_size                     = sqrt(2)*radius;
+  grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
+  grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
+  grid.data                          = (Grid_Cell*) malloc(sizeof(*grid.data) * grid.number_of_cells);
+
+  defer { free(grid.data); };
+  memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
+
+  printf("[..]\n");
+  printf("[..] Cell size       := %g\n", grid.cell_size);
+  printf("[..] Number of cells := %zu\n", grid.number_of_cells);
+  printf("[..] Number of cells per dimension := %zu\n", grid.number_of_cells_per_dimension);
+
+  {
+    // @Incomplete: combine tightest_packing with creating_grid, so that we don't loop over positions array twice!
+    printf("[..]\n");
+    printf("[..] Collecting nodes to a grid ... \n");
+    printf("[..] Finished creating a grid in := ");
+    measure_scope();
+    create_square_grid(&grid, &positions);
+  }
+
+
+  {
+    printf("[..]\n");
+    printf("[..] Random walk ... \n");
+    printf("[..] Finished random walk in := ");
+    measure_scope();
+    process_random_walk(&grid, &positions, radius, max_random_walking_distance);
+  }
+
+
+  const size_t a_lot = 1e10; // ~ 10 gigabytes.
+
+  Graph graph;
+  graph.count = N;
+  graph.connected_nodes_count = (uint8*) malloc(a_lot);
+  graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
+  graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
+
+  defer { free(graph.connected_nodes_count); };
+  memset(graph.connected_nodes_count, 0, sizeof(*graph.connected_nodes_count) * N);
+
+  {
+    printf("[..]\n");
+    printf("[..] Successfully allocated 10 gigabytes of memory!\n");
+    printf("[..] Collecting nodes to graph ... \n");
+    printf("[..] Finished creating graph in := ");
+    measure_scope();
+    //naive_collect_points_to_graph(&graph, &positions, radius, L);
+    collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
+  }
+
+
+
+  dynamic_array<uint> cluster_sizes;
+  defer { array_free(&cluster_sizes); };
+
+  bool* hash_table = (bool*) malloc(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+
+  defer { free(hash_table); };
+  memset(hash_table, false, sizeof(bool) * N);
+
+  Queue queue;
+  queue.data     = (uint*) malloc(sizeof(uint) * N);
+  queue.first    = 0;
+  queue.last     = 0;
+  queue.max_size = N;
+
+  defer { free(queue.data); };
+
+  {
+    printf("[..]\n");
+    printf("[..] Starting BFS ... \n");
+    printf("[..] Finished BFS in := ");
+    measure_scope();
+
+    for (size_t i = 0; i < graph.count; i++) {
+      assert(is_queue_empty(&queue));
+      if (!hash_table[i]) {
+        breadth_first_search(&graph, &queue, hash_table, i, &cluster_sizes);
+      }
+    }
+  }
+  //assert(check_hash_table_is_filled_up(hash_table, N));
+
+  // Find the biggest cluster.
+  uint max_cluster = cluster_sizes[0];
+  for (size_t i = 0; i < cluster_sizes.size; i++) {
+    max_cluster = max(cluster_sizes[i], max_cluster);
+  }
+  assert(max_cluster);
+
+  {
+    printf("[..] Percolating cluster size := %u\n",  max_cluster);
+    printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
+    #if 0
+    printf("[..] Cluster sizes := [");
+    for (size_t i = 0; i < cluster_sizes.size; i++) {
+      printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
+    }
+    #endif
+
+    puts("");
+    puts("");
+    puts("");
+  }
+  // 
 
 
 
@@ -953,20 +1023,9 @@ int main(int argc, char** argv) {
 
   // circle vertices & indices.
   const uint NUM_VERTICES = 21;
-
-  Vec2 positions[NUM_VERTICES];
   uint16 indices[NUM_VERTICES * 3];
 
   { // generating vertices & indices for a circle of unit radius.
-    positions[0] = { 0.0f, 0.0f };
-    
-    float  a = 0;
-    float da = TAU / (double)(NUM_VERTICES-2);
-    for (size_t i = 1; i < NUM_VERTICES; i++) {
-      positions[i] = { cos(a), sin(a) };
-      a += da;
-    }
-
     size_t j = 0;
     for (size_t i = 1; i < NUM_VERTICES; i++) {
       indices[j  ] = 0;
@@ -977,43 +1036,75 @@ int main(int argc, char** argv) {
   }
 
   uint vao;
-  glGenVertexArrays(1, &vao);
-  glBindVertexArray(vao);
+  uint vbo;
+  {
+    Create_Vertex_Buffer buffer;
 
-  uint buffer;
-  glGenBuffers(1, &buffer);
-  glBindBuffer(GL_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    array_resize(&buffer.vertices, NUM_VERTICES * 2);
 
-  glEnableVertexAttribArray(0);
-  // index is the index of an attribute we want to enable.
+    buffer.vertices[0] = 0.0f;
+    buffer.vertices[1] = 0.0f;
 
-  glVertexAttribPointer(0, 2, GL_FLOAT, false, sizeof(float)*2, 0);
-  // index := attribute index (it is the first attribute so 0, next one is going to be 1, 2, ...).
-  // size  := number of values in an attribute.
-  // type  := type of the thing in buffer.
-  // normalizd := normalized flag (should be true if data in buffer is not normalized, i.e. not (0..1))
-  // stride  := size of one vertex (in bytes)
-  // pointer := size to next attribute from the beginning of a vertex (in bytes)
+    float  a = 0;
+    float da = TAU / (double)(NUM_VERTICES-2);
+    for (size_t i = 2; i < buffer.vertices.size; i += 2) {
+      buffer.vertices[i+0] = cos(a);
+      buffer.vertices[i+1] = sin(a);
+      a += da;
+    }
+
+    vao = create_vertex_array();
+    vbo = create_vertex_buffer(buffer);
+
+    Vertex_Attribute va;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
+
+    add_vertex_attribute(va);
+  }
 
   uint ibo;
   glGenBuffers(1, &ibo);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
+  Shader basic_shader;
+  Basic_Shader_Data data;
+  {
+    Vertex_And_Fragment_Shaders shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
+    basic_shader.program       = create_shader(shaders.vertex, shaders.fragment);
+    basic_shader.setup_uniform = basic_shader_uniform;
+    basic_shader.data          = &data;
 
-  Vertex_And_Fragment_Shaders shaders = load_shaders("src/Basic.shader");
+    data.uniform_mvp   = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
+    data.uniform_color = glGetUniformLocation(basic_shader.program, "uniform_color");
+    assert(data.uniform_mvp   != -1);
+    assert(data.uniform_color != -1);
+  }
 
-  uint shader = create_shader(shaders.vertex, shaders.fragment);
-  glUseProgram(shader);
 
-  int uniform_color = glGetUniformLocation(shader, "uniform_color"); // get address of uniform variable
-  int uniform_mvp   = glGetUniformLocation(shader, "uniform_mvp");
+  uint another_vao;
+  uint another_vbo;
+  {
+    Create_Vertex_Buffer buffer;
 
-  assert(uniform_color != -1);
-  assert(uniform_mvp   != -1);
+    array_resize(&buffer.vertices, 4);
 
-  glm::mat4 projection = glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
+    const float lines[] = {
+      -1.0f, -1.0f,
+       1.0f,  1.0f,
+    };
+    memcpy(buffer.vertices.data, lines, sizeof(lines));
+
+    another_vao = create_vertex_array();
+    another_vbo = create_vertex_buffer(buffer);
+
+    Vertex_Attribute va;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
+    add_vertex_attribute(va);
+  }
+
 
   float r = 0.0f;
   float increment = 0.05f;
@@ -1021,26 +1112,44 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
-#if 1
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glUseProgram(0);
+
+
+    Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+    data->color[0] = r;
+    data->color[1] = 0.3f;
+    data->color[2] = 1.0f;
+    data->color[3] = 0.87f;
+    data->mvp      = glm::mat4(1);
+
+    bind_shader(basic_shader);
+    bind_vertex_array(another_vao);
+    glDrawArrays(GL_LINES, 0, 2);
+
+
     // 
     // @Incomplete: batch rendering...
     // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
     // 
-    for (size_t i = 0; i < circles_array.size; i++) {
-      float x = circles_array[i].x;
-      float y = circles_array[i].y;
+    for (size_t i = 0; i < positions.size; i++) {
+      float x = positions[i].x;
+      float y = positions[i].y;
 
       glm::mat4 model = glm::mat4(1);
       model = glm::translate(model, glm::vec3(x, y, 0));
       model = glm::scale(model, glm::vec3(radius, radius, 0));
 
-      glm::mat4 mvp = projection * model;
+      Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+      data->mvp = model;
 
-      glUniform4f       (uniform_color, r, 0.3f, 0.8f, 1.0f);
-      glUniformMatrix4fv(uniform_mvp,   1, GL_FALSE, (float*) &mvp);
+      bind_shader(basic_shader);
+      bind_vertex_array(vao);
       glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
     }
-#endif
+
 
     if (r > 1.0f) {
       increment = -0.05f;
