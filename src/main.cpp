@@ -102,7 +102,7 @@ struct string {
   size_t count;
 };
 
-struct Vertex_And_Fragment_Shaders {
+struct Vertex_And_Fragment_Shader_Sources {
   string vertex;
   string fragment;
 };
@@ -546,7 +546,8 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   uint count = 0;
   Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
 
-  
+  size_t width = grid->number_of_cells_per_dimension;
+
   for (size_t k = 0; k < array->size; k++) {
     graph->connected_nodes[k] = graph->graph_data;
 
@@ -554,6 +555,39 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
     get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
+
+
+#if 0
+    size_t num   = ceil((2*radius + L) / grid->cell_size) + 2;
+    size_t len   = 2*num + 1;
+    size_t total = square(len) - 1;
+
+    uint count_test = 0;
+    Grid_Cell* neighbours_test = (Grid_Cell*) alloca(sizeof(Grid_Cell) * total);
+
+    for (size_t i = 0; i < len; i++) {
+      for (size_t j = 0; j < len; j++) {
+
+        size_t pi = n.i + i - num;
+        size_t pj = n.j + j - num;
+
+        if (pi == n.i && pj == n.j)     { continue; }
+        if (pi >= width || pj >= width) { continue; }
+
+        size_t index = pi*width + pj;
+        assert(index < grid->number_of_cells);
+
+        Grid_Cell cell_id = grid->data[index];
+
+        if (cell_id != CELL_IS_NOT_OCCUPIED) {
+          neighbours_test[count_test] = cell_id;
+          count_test += 1;
+        }
+      }
+    }
+    assert(count == count_test);
+#endif
+
 
     for (uint c = 0; c < count; c++) {
       Grid_Cell cell_id = neighbours[c];
@@ -638,7 +672,7 @@ string read_entire_file(const char* filename) {
   return { data, size };
 }
 
-Vertex_And_Fragment_Shaders load_shaders(const char* filename) {
+Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
   string s = read_entire_file(filename); // @MemoryLeak: 
   if (!s.count) return {};               // @MemoryLeak: 
 
@@ -760,7 +794,7 @@ struct Vertex_Attribute {
 struct Shader {
   uint program = 0;
   void (*setup_uniform)(void*) = NULL;
-  void* data;
+  void* data = NULL;
 };
 
 struct Basic_Shader_Data {
@@ -782,11 +816,9 @@ void add_vertex_attribute(Vertex_Attribute va) {
 }
 
 uint create_vertex_array() {
-  
   uint buffer;
   glGenVertexArrays(1, &buffer);
   glBindVertexArray(buffer);
-
   return buffer;
 }
 
@@ -824,7 +856,7 @@ void basic_shader_uniform(void* data) {
 int main(int argc, char** argv) {
   init_filesystem_api();
 
-  float radius = 0.01;
+  float radius = 0.05;
   float L      = radius + radius/10.0f;
   float packing_factor = 0.7;
   float max_random_walking_distance;
@@ -867,7 +899,7 @@ int main(int argc, char** argv) {
   assert(max_circles_area < max_window_area);
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
   assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-  assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+  // assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
@@ -1071,7 +1103,7 @@ int main(int argc, char** argv) {
   Shader basic_shader;
   Basic_Shader_Data data;
   {
-    Vertex_And_Fragment_Shaders shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
+    Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
     basic_shader.program       = create_shader(shaders.vertex, shaders.fragment);
     basic_shader.setup_uniform = basic_shader_uniform;
     basic_shader.data          = &data;
@@ -1105,6 +1137,32 @@ int main(int argc, char** argv) {
     add_vertex_attribute(va);
   }
 
+  uint another_vao2;
+  uint another_vbo2;
+  {
+    Create_Vertex_Buffer buffer;
+
+    const float quad[] = {
+      -0.5f, -0.5f,
+       0.5f, -0.5f,
+       0.5f,  0.5f,
+
+      -0.5f,  0.5f,
+      -0.5f, -0.5f,
+       0.5f,  0.5f,
+    };
+
+    array_resize(&buffer.vertices, array_size(quad));
+    memcpy(buffer.vertices.data, quad, sizeof(quad));
+
+    another_vao2 = create_vertex_array();
+    another_vbo2 = create_vertex_buffer(buffer);
+
+    Vertex_Attribute va;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
+  }
+
 
   float r = 0.0f;
   float increment = 0.05f;
@@ -1130,6 +1188,7 @@ int main(int argc, char** argv) {
     glDrawArrays(GL_LINES, 0, 2);
 
 
+#if 0
     // 
     // @Incomplete: batch rendering...
     // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
@@ -1148,6 +1207,28 @@ int main(int argc, char** argv) {
       bind_shader(basic_shader);
       bind_vertex_array(vao);
       glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
+    }
+#endif
+
+    for (size_t i = 0; i < grid.number_of_cells_per_dimension; i++) {
+      for (size_t j = 0; j < grid.number_of_cells_per_dimension; j++) {
+        float x = i * grid.cell_size - 2.0f;
+        float y = j * grid.cell_size - 2.0f;
+
+        glm::mat4 model = glm::mat4(1);
+        model = glm::translate(model, glm::vec3(x, y, 0));
+
+        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+        data->color[0] = 1.0f;
+        data->color[1] = 0.0f;
+        data->color[2] = 0.0f;
+        data->color[3] = 0.87f;
+        data->mvp = model;
+
+        bind_shader(basic_shader);
+        bind_vertex_array(vao);
+        glDrawArrays(GL_LINES, 0, 6);
+      }
     }
 
 
