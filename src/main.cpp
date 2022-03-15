@@ -269,7 +269,7 @@ bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
 }
 
 bool check_circles_do_not_intersect_each_other(dynamic_array<Vec2>* array, float radius) {
-  const float min_distance_between_nodes = (2 * radius) * (2 * radius);
+  const float min_distance_between_nodes = square(radius + radius);
 
   for (size_t i = 0; i < array->size; i++) {
     for (size_t j = 0; j < array->size; j++) {
@@ -469,7 +469,6 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
 }
 
 void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float radius, float max_random_walking_distance) {
-
   uint count = 0;
   Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
 
@@ -778,7 +777,33 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 
 
 struct Create_Vertex_Buffer {
-  dynamic_array<float> vertices;
+  const float* data;
+  size_t       size;
+};
+
+template<class T>
+struct Create_Index_Buffer {
+  const T* data;
+  size_t   size;
+};
+
+struct Vertex_Array {
+  uint vao = 0;
+  uint vbo = 0;
+  uint ibo = 0;
+
+  // @Incomplete:
+  // union {
+  //  struct ... 
+        uint vbo_attribute_index_in_enabled_array = 0;
+        uint vbo_number_of_vertices_to_draw       = 0;
+  //  };
+  //  struct ... 
+        GLenum ibo_type_of_indices           = 0;
+        uint   ibo_number_of_indices_to_draw = 0;
+        const void* ibo_indices_array        = NULL;
+  //  };
+  // };
 };
 
 struct Vertex_Attribute {
@@ -815,6 +840,14 @@ void add_vertex_attribute(Vertex_Attribute va) {
                         (const void*) va.size_to_an_attribute_from_beginning_of_a_vertex_in_bytes);
 }
 
+template<class T> GLenum get_index_type()   { return 0; }
+template<> GLenum get_index_type<uint8 >()  { return GL_UNSIGNED_BYTE;  }
+template<> GLenum get_index_type<uint16>()  { return GL_UNSIGNED_SHORT; }
+template<> GLenum get_index_type<uint32>()  { return GL_UNSIGNED_INT;   }
+
+
+
+
 uint create_vertex_array() {
   uint buffer;
   glGenVertexArrays(1, &buffer);
@@ -823,25 +856,80 @@ uint create_vertex_array() {
 }
 
 uint create_vertex_buffer(Create_Vertex_Buffer vbo) {
-  dynamic_array<float> vertices = vbo.vertices;
-
   uint buffer;
   glGenBuffers(1, &buffer);
   glBindBuffer(GL_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(*vertices.data) * vertices.size, vertices.data, GL_STATIC_DRAW);
-
-  // @Incomplete: we have to somehow know if the data is allocated dynamically, or statically. Maybe have a flag in dynamic_array that is going to say that. Then we won't need to deallocate that for static data.
-  array_free(&vertices);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(*vbo.data) * vbo.size, vbo.data, GL_STATIC_DRAW);
   return buffer;
 }
 
-void bind_vertex_array(uint vao) {
-  glBindVertexArray(vao);
+template<class T>
+uint create_index_buffer(Create_Index_Buffer<T> ibo) {
+  uint buffer;
+  glGenBuffers(1, &buffer);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(*ibo.data) * ibo.size, ibo.data, GL_STATIC_DRAW);
+  return buffer;
 }
+
+template<class T>
+Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo) {
+  uint vao_id = create_vertex_array();
+  uint vbo_id = create_vertex_buffer(vbo);
+  uint ibo_id = create_index_buffer(ibo);
+
+  Vertex_Array va;
+  va.vao = vao_id;
+  va.vbo = vbo_id;
+  va.ibo = ibo_id;
+
+  //va.vbo_attribute_index_in_enabled_array = 0;
+  va.vbo_number_of_vertices_to_draw = vbo.size;
+
+  va.ibo_type_of_indices = get_index_type<T>();
+  va.ibo_number_of_indices_to_draw = ibo.size;
+  //va.ibo_indices_array = NULL;
+  return va;
+}
+
+Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo) {
+  uint vao_id = create_vertex_array();
+  uint vbo_id = create_vertex_buffer(vbo);
+
+  Vertex_Array va;
+  va.vao = vao_id;
+  va.vbo = vbo_id;
+
+  //va.vbo_attribute_index_in_enabled_array = 0;
+  va.vbo_number_of_vertices_to_draw = vbo.size;
+  return va;
+}
+
+void bind_vertex_array(uint vao)  { glBindVertexArray(vao); }
+void bind_vertex_buffer(uint vbo) { glBindBuffer(GL_ARRAY_BUFFER, vbo); }
+void bind_index_buffer(uint ibo)  { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo); }
 
 void bind_shader(Shader shader) {
   glUseProgram(shader.program);
   shader.setup_uniform(shader.data);
+}
+
+void draw_call(GLenum draw_mode, Vertex_Array va) {
+  bind_vertex_array(va.vao);
+  if (va.ibo) {
+    glDrawElements(draw_mode,
+                   va.ibo_number_of_indices_to_draw,
+                   va.ibo_type_of_indices,
+                   va.ibo_indices_array);
+
+  } else if (va.vbo) {
+    glDrawArrays(draw_mode,
+                 va.vbo_attribute_index_in_enabled_array,
+                 va.vbo_number_of_vertices_to_draw);
+  } else {
+    assert(0);
+  }
+  // @Log: Successfully issued a draw call!
 }
 
 void basic_shader_uniform(void* data) {
@@ -879,8 +967,6 @@ int main(int argc, char** argv) {
     //poisson_disk_sampling(&positions, N, radius);
     tightest_packing_sampling(&positions, &max_random_walking_distance, radius, packing_factor);
   }
-  //assert(check_circles_are_inside_a_box(&positions, radius));
-  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
 
   const size_t N = positions.size;
@@ -899,7 +985,7 @@ int main(int argc, char** argv) {
   assert(max_circles_area < max_window_area);
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
   assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-  // assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+  //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
 
 
 
@@ -926,7 +1012,7 @@ int main(int argc, char** argv) {
     create_square_grid(&grid, &positions);
   }
 
-
+#if 1
   {
     printf("[..]\n");
     printf("[..] Random walk ... \n");
@@ -934,6 +1020,9 @@ int main(int argc, char** argv) {
     measure_scope();
     process_random_walk(&grid, &positions, radius, max_random_walking_distance);
   }
+  //assert(check_circles_are_inside_a_box(&positions, radius));
+  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
+#endif
 
 
   const size_t a_lot = 1e10; // ~ 10 gigabytes.
@@ -1053,52 +1142,10 @@ int main(int argc, char** argv) {
   glDebugMessageCallback(gl_debug_callback, NULL);
 
 
-  // circle vertices & indices.
-  const uint NUM_VERTICES = 21;
-  uint16 indices[NUM_VERTICES * 3];
 
-  { // generating vertices & indices for a circle of unit radius.
-    size_t j = 0;
-    for (size_t i = 1; i < NUM_VERTICES; i++) {
-      indices[j  ] = 0;
-      indices[j+1] = i;
-      indices[j+2] = i+1;
-      j += 3;
-    }
-  }
 
-  uint vao;
-  uint vbo;
-  {
-    Create_Vertex_Buffer buffer;
 
-    array_resize(&buffer.vertices, NUM_VERTICES * 2);
 
-    buffer.vertices[0] = 0.0f;
-    buffer.vertices[1] = 0.0f;
-
-    float  a = 0;
-    float da = TAU / (double)(NUM_VERTICES-2);
-    for (size_t i = 2; i < buffer.vertices.size; i += 2) {
-      buffer.vertices[i+0] = cos(a);
-      buffer.vertices[i+1] = sin(a);
-      a += da;
-    }
-
-    vao = create_vertex_array();
-    vbo = create_vertex_buffer(buffer);
-
-    Vertex_Attribute va;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
-
-    add_vertex_attribute(va);
-  }
-
-  uint ibo;
-  glGenBuffers(1, &ibo);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
   Shader basic_shader;
   Basic_Shader_Data data;
@@ -1114,53 +1161,109 @@ int main(int argc, char** argv) {
     assert(data.uniform_color != -1);
   }
 
-
-  uint another_vao;
-  uint another_vbo;
+  Vertex_Array vert_array1;
   {
-    Create_Vertex_Buffer buffer;
+    const uint NUM_VERTICES = 21;
 
-    array_resize(&buffer.vertices, 4);
+    dynamic_array<float>  vertex;
+    dynamic_array<uint16> index;
+    array_resize(&vertex, NUM_VERTICES * 2);
+    array_resize(&index, NUM_VERTICES * 3);
+
+    defer { array_free(&vertex); };
+    defer { array_free(&index); };
+
+
+    {
+      vertex[0] = 0.0f;
+      vertex[1] = 0.0f;
+
+      float  a = 0;
+      float da = TAU / (double)(NUM_VERTICES-2);
+      for (size_t i = 2; i < vertex.size; i += 2) {
+        vertex[i+0] = cos(a);
+        vertex[i+1] = sin(a);
+        a += da;
+      }
+
+      size_t j = 0;
+      for (size_t i = 1; i < NUM_VERTICES; i++) {
+        index[j  ] = 0;
+        index[j+1] = i;
+        index[j+2] = i+1;
+        j += 3;
+      }
+    }
+
+    Create_Vertex_Buffer vbo;
+    Create_Index_Buffer<uint16> ibo;
+
+    vbo.data = vertex.data;
+    vbo.size = vertex.size;
+
+    ibo.data = index.data;
+    ibo.size = index.size;
+
+    vert_array1 = create_vertex_array(vbo, ibo);
+
+    Vertex_Attribute va;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
+    add_vertex_attribute(va);
+  }
+
+
+  Vertex_Array vert_array2;
+  {
 
     const float lines[] = {
       -1.0f, -1.0f,
        1.0f,  1.0f,
     };
-    memcpy(buffer.vertices.data, lines, sizeof(lines));
 
-    another_vao = create_vertex_array();
-    another_vbo = create_vertex_buffer(buffer);
+    Create_Vertex_Buffer buffer;
+    buffer.data = lines;
+    buffer.size = array_size(lines);
+
+    vert_array2 = create_vertex_array(buffer);
 
     Vertex_Attribute va;
     va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.data) * 2;
     add_vertex_attribute(va);
   }
 
-  uint another_vao2;
-  uint another_vbo2;
-  {
-    Create_Vertex_Buffer buffer;
 
+  Vertex_Array vert_array3;
+  {
     const float quad[] = {
       -0.5f, -0.5f,
-       0.5f, -0.5f,
-       0.5f,  0.5f,
-
       -0.5f,  0.5f,
-      -0.5f, -0.5f,
+       0.5f, -0.5f,
        0.5f,  0.5f,
     };
 
-    array_resize(&buffer.vertices, array_size(quad));
-    memcpy(buffer.vertices.data, quad, sizeof(quad));
+    const uint8 indices[] = {
+      0, 1,
+      0, 2,
+      1, 3,
+      2, 3,
+    };
 
-    another_vao2 = create_vertex_array();
-    another_vbo2 = create_vertex_buffer(buffer);
+    Create_Vertex_Buffer vertex;
+    vertex.data = quad;
+    vertex.size = array_size(quad);
+
+    Create_Index_Buffer<uint8> index;
+    index.data = indices;
+    index.size = array_size(indices);
+
+    vert_array3 = create_vertex_array(vertex, index);
 
     Vertex_Attribute va;
     va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.vertices.data) * 2;
+    va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
+    add_vertex_attribute(va);
   }
 
 
@@ -1183,12 +1286,12 @@ int main(int argc, char** argv) {
     data->color[3] = 0.87f;
     data->mvp      = glm::mat4(1);
 
-    bind_shader(basic_shader);
-    bind_vertex_array(another_vao);
-    glDrawArrays(GL_LINES, 0, 2);
-
-
 #if 0
+    bind_shader(basic_shader);
+    draw_call(GL_LINES, vert_array2);
+#endif
+
+#if 1
     // 
     // @Incomplete: batch rendering...
     // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
@@ -1205,18 +1308,19 @@ int main(int argc, char** argv) {
       data->mvp = model;
 
       bind_shader(basic_shader);
-      bind_vertex_array(vao);
-      glDrawElements(GL_LINES, sizeof(indices)/sizeof(*indices), GL_UNSIGNED_SHORT, NULL);
+      draw_call(GL_LINES, vert_array1);
     }
 #endif
 
+#if 1
     for (size_t i = 0; i < grid.number_of_cells_per_dimension; i++) {
       for (size_t j = 0; j < grid.number_of_cells_per_dimension; j++) {
-        float x = i * grid.cell_size - 2.0f;
-        float y = j * grid.cell_size - 2.0f;
+        float x = (i + 1/2.0f) * grid.cell_size - 1.0f;
+        float y = (j + 1/2.0f) * grid.cell_size - 1.0f;
 
         glm::mat4 model = glm::mat4(1);
         model = glm::translate(model, glm::vec3(x, y, 0));
+        model = glm::scale(model, glm::vec3(grid.cell_size, grid.cell_size, 0));
 
         Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
         data->color[0] = 1.0f;
@@ -1226,10 +1330,10 @@ int main(int argc, char** argv) {
         data->mvp = model;
 
         bind_shader(basic_shader);
-        bind_vertex_array(vao);
-        glDrawArrays(GL_LINES, 0, 6);
+        draw_call(GL_LINES, vert_array3);
       }
     }
+#endif
 
 
     if (r > 1.0f) {
