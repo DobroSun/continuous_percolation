@@ -153,6 +153,17 @@ struct Queue {
   uint max_size;
 };
 
+struct Result {
+  bool already_found_percolating_cluster = false;
+
+  bool touches_left  = false;
+  bool touches_right = false;
+  bool touches_up    = false;
+  bool touches_down  = false;
+  size_t percolating_cluster_size = 0;
+};
+
+
 bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
 bool string_compare(string a, const char* b) { return string_compare(b, a); }
 
@@ -255,6 +266,32 @@ bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
 }
 
+void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, Result* result) {
+  if (!result->already_found_percolating_cluster) {
+    float diameter = 2*radius;
+
+    bool touches_left  = pos.x <  left_boundary + diameter;
+    bool touches_right = pos.x > right_boundary - diameter;
+    bool touches_up    = pos.y < lower_boundary + diameter;
+    bool touches_down  = pos.y > upper_boundary - diameter;
+
+    bool* left  = &result->touches_left;
+    bool* right = &result->touches_right;
+    bool* up    = &result->touches_up;
+    bool* down  = &result->touches_down;
+
+    *left  = *left  ? *left  : touches_left;
+    *right = *right ? *right : touches_right;
+    *up    = *up    ? *up    : touches_up;
+    *down  = *down  ? *down  : touches_down;
+
+    if (*up && *down || *left && *right) {
+      result->already_found_percolating_cluster = true;
+      result->percolating_cluster_size = cluster_size;
+    }
+  }
+}
+
 bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
   for (size_t i = 0; i < array->size; i++) {
     Vec2 v = (*array)[i];
@@ -262,8 +299,8 @@ bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
     float x = v.x;
     float y = v.y;
 
-    assert(-1.0f <= x-radius && x+radius <= 1.0f);
-    assert(-1.0f <= y-radius && y+radius <= 1.0f);
+    assert(left_boundary  <= x-radius && x+radius <= right_boundary);
+    assert(lower_boundary <= y-radius && y+radius <= upper_boundary);
   }
   return true;
 }
@@ -433,7 +470,7 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_wal
   float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
   float height = sqrt(3) * radius;
 
-  *max_random_walking_distance = sqrt(square(radius) + square(height));
+  *max_random_walking_distance = radius - target_radius;
 
   // centers of a circle.
   float x;
@@ -601,12 +638,19 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, size_t starting_index, dynamic_array<uint>* cluster_sizes) {
+void breadth_first_search(const Graph* graph, Queue* queue, const dynamic_array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, dynamic_array<uint>* cluster_sizes, Result* result) {
+
+  uint* size = array_add(cluster_sizes);
+
   // add i-th node.
   hash_table[starting_index] = true;
   add_to_queue(queue, starting_index);
+  *size = 1;
 
-  uint* size = array_add(cluster_sizes, 1);
+  {
+    Vec2 pos = (*positions)[starting_index];
+    check_circle_touches_boundaries(pos, radius, *size, result);
+  }
 
   while (!is_queue_empty(queue)) {
     uint node_id = get_from_queue(queue);
@@ -623,6 +667,9 @@ void breadth_first_search(const Graph* graph, Queue* queue, bool* hash_table, si
         hash_table[new_node_id] = true;
         add_to_queue(queue, new_node_id);
         *size += 1;
+
+        Vec2 pos = (*positions)[new_node_id];
+        check_circle_touches_boundaries(pos, radius, *size, result);
       }
     }
   }
@@ -806,11 +853,12 @@ struct Vertex_Array {
   // };
 };
 
+// @Incomplete: could actually make this take 8 bytes instead of 16, but whatever.
 struct Vertex_Attribute {
   uint16 attribute_index = 0;
   uint16 number_of_values_in_an_attribute = 0;                         // should be 1, 2, 3 or 4.
   uint16 size_of_one_vertex_in_bytes = 0;
-  uint16 size_to_an_attribute_from_beginning_of_a_vertex_in_bytes = 0; // should be 0 if there is no attribute.
+  uint16 size_to_an_attribute_from_beginning_of_a_vertex_in_bytes = 0; // should be 0 if there is only one attribute.
 
   GLenum attribute_type = GL_FLOAT;
   bool is_normalized = false;                                          // should be false if a value is normalized.
@@ -945,8 +993,8 @@ int main(int argc, char** argv) {
   init_filesystem_api();
 
   float radius = 0.05;
-  float L      = radius + radius/10.0f;
-  float packing_factor = 0.7;
+  float L      = 1.5 * radius;
+  float packing_factor = 0.3;
   float max_random_walking_distance;
 
 
@@ -1064,6 +1112,8 @@ int main(int argc, char** argv) {
 
   defer { free(queue.data); };
 
+  Result percolation;
+
   {
     printf("[..]\n");
     printf("[..] Starting BFS ... \n");
@@ -1071,23 +1121,20 @@ int main(int argc, char** argv) {
     measure_scope();
 
     for (size_t i = 0; i < graph.count; i++) {
-      assert(is_queue_empty(&queue));
       if (!hash_table[i]) {
-        breadth_first_search(&graph, &queue, hash_table, i, &cluster_sizes);
+        Result result;
+
+        breadth_first_search(&graph, &queue, &positions, hash_table, i, radius, &cluster_sizes, &result);
+        percolation = percolation.already_found_percolating_cluster ? percolation : result;
       }
     }
   }
   //assert(check_hash_table_is_filled_up(hash_table, N));
 
-  // Find the biggest cluster.
-  uint max_cluster = cluster_sizes[0];
-  for (size_t i = 0; i < cluster_sizes.size; i++) {
-    max_cluster = max(cluster_sizes[i], max_cluster);
-  }
-  assert(max_cluster);
 
   {
-    printf("[..] Percolating cluster size := %u\n",  max_cluster);
+    printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
+    printf("[..] Percolating cluster size := %u\n",  percolation.percolating_cluster_size);
     printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
     #if 0
     printf("[..] Cluster sizes := [");
@@ -1207,6 +1254,7 @@ int main(int argc, char** argv) {
     vert_array1 = create_vertex_array(vbo, ibo);
 
     Vertex_Attribute va;
+    va.attribute_index = 0;
     va.number_of_values_in_an_attribute = 2;
     va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
     add_vertex_attribute(va);
@@ -1228,6 +1276,7 @@ int main(int argc, char** argv) {
     vert_array2 = create_vertex_array(buffer);
 
     Vertex_Attribute va;
+    va.attribute_index = 0;
     va.number_of_values_in_an_attribute = 2;
     va.size_of_one_vertex_in_bytes      = sizeof(*buffer.data) * 2;
     add_vertex_attribute(va);
@@ -1261,6 +1310,7 @@ int main(int argc, char** argv) {
     vert_array3 = create_vertex_array(vertex, index);
 
     Vertex_Attribute va;
+    va.attribute_index = 0;
     va.number_of_values_in_an_attribute = 2;
     va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
     add_vertex_attribute(va);
@@ -1273,9 +1323,9 @@ int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    bind_vertex_array(0);
+    bind_vertex_buffer(0);;
+    bind_index_buffer(0);
     glUseProgram(0);
 
 
