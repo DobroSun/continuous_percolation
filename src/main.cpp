@@ -210,46 +210,6 @@ uint get_circle_id_on_a_grid(const Grid2D* grid, Vec2 point) {
   return pos.i * grid->number_of_cells_per_dimension + pos.j;
 }
 
-void get_all_neighbours_on_a_grid(const Grid2D* grid, Grid_Position n, Grid_Cell* data, uint* count) {
-  // 
-  // @Incomplete: since we are using sqrt(2)*radius as a cell size, circles don't fit completely into a cell, so there are cases when we have to take more neighbours from each side, depending on how circle is placed in a particular cell
-  // Naive   approach: take 2 layers of neighbours. Total 32 possible neighbours per search.
-  // Another approach: divide a cell into 4 quadrants and figure out where our current circle is placed. Total 15 possible neighbours per search
-  // 
-
-  assert(data);
-  assert(count);
-  *count = 0;
-
-  size_t width = grid->number_of_cells_per_dimension;
-
-  uint i = n.i;
-  uint j = n.j;
-  Grid_Position neighbours[NUMBER_OF_NEIGHBOURS] = { {i+2, j-2}, {i+2, j-1}, {i+2, j}, {i+2, j+1}, {i+2, j+2},
-                                                     {i+1, j-2}, {i+1, j-1}, {i+1, j}, {i+1, j+1}, {i+1, j+2},
-                                                     {i,   j-2}, {i,   j-1},           {i,   j+1}, {i,   j+2},
-                                                     {i-1, j-2}, {i-1, j-1}, {i-1, j}, {i-1, j+1}, {i-1, j+2},
-                                                     {i-2, j-2}, {i-2, j-1}, {i-2, j}, {i-2, j+1}, {i-2, j+2} };
-
-
-
-  for (size_t i = 0; i < array_size(neighbours); i++) {
-    Grid_Position n = neighbours[i];
-
-    if (n.i >= width || n.j >= width) { continue; }
-
-    size_t index = n.i*width + n.j;
-    assert(index < grid->number_of_cells);
-
-    Grid_Cell cell_id = grid->data[index];
-
-    if (cell_id != CELL_IS_NOT_OCCUPIED) {
-      data[*count] = cell_id;
-      *count += 1;
-    }
-  }
-}
-
 float distance_squared(Vec2 a, Vec2 b) {
   float x  = (a.x - b.x);
   float y  = (a.y - b.y);
@@ -570,10 +530,6 @@ void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* arra
 
 void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dynamic_array<Vec2>* array, float radius, float L) {
   assert(array->size == graph->count);
-  assert(L < 2*radius); // otherwise number of neighbours should be higher than 32.
-
-  uint count = 0;
-  Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
 
   size_t width = grid->number_of_cells_per_dimension;
 
@@ -583,16 +539,14 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     const Vec2* point = &(*array)[k];
     Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
-    get_all_neighbours_on_a_grid(grid, n, neighbours, &count);
 
 
-#if 0
-    size_t num   = ceil((2*radius + L) / grid->cell_size) + 2;
+    size_t num   = floor(2.0f*(radius+L)/grid->cell_size);
     size_t len   = 2*num + 1;
     size_t total = square(len) - 1;
 
-    uint count_test = 0;
-    Grid_Cell* neighbours_test = (Grid_Cell*) alloca(sizeof(Grid_Cell) * total);
+    uint count = 0;
+    Grid_Cell* neighbours = (Grid_Cell*) alloca(sizeof(Grid_Cell) * total);
 
     for (size_t i = 0; i < len; i++) {
       for (size_t j = 0; j < len; j++) {
@@ -609,14 +563,11 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
         Grid_Cell cell_id = grid->data[index];
 
         if (cell_id != CELL_IS_NOT_OCCUPIED) {
-          neighbours_test[count_test] = cell_id;
-          count_test += 1;
+          neighbours[count] = cell_id;
+          count+= 1;
         }
       }
     }
-    assert(count == count_test);
-#endif
-
 
     for (uint c = 0; c < count; c++) {
       Grid_Cell cell_id = neighbours[c];
@@ -1026,8 +977,8 @@ int main(int argc, char** argv) {
 
 
   const size_t N = positions.size;
-  float one_dimension_range = 2.0f;
-  float max_window_area  = 2.0f * 2.0f;
+  float one_dimension_range = right_boundary - left_boundary;
+  float max_window_area  = square(one_dimension_range);
   float max_circles_area = positions.size * PI * square(radius);
   float experimental_packing_factor = max_circles_area / max_window_area;
 
@@ -1226,35 +1177,30 @@ int main(int argc, char** argv) {
 
   Vertex_Array vert_array1;
   {
-    const uint NUM_VERTICES = 21;
+    const uint NUM_VERTICES = 40;
 
     dynamic_array<float>  vertex;
     dynamic_array<uint16> index;
     array_resize(&vertex, NUM_VERTICES * 2);
-    array_resize(&index, NUM_VERTICES * 3);
+    array_resize(&index , NUM_VERTICES * 2);
 
     defer { array_free(&vertex); };
     defer { array_free(&index); };
 
 
     {
-      vertex[0] = 0.0f;
-      vertex[1] = 0.0f;
-
       float  a = 0;
       float da = TAU / (double)(NUM_VERTICES-2);
-      for (size_t i = 2; i < vertex.size; i += 2) {
+      for (size_t i = 0; i < vertex.size; i += 2) {
         vertex[i+0] = cos(a);
         vertex[i+1] = sin(a);
         a += da;
       }
 
       size_t j = 0;
-      for (size_t i = 1; i < NUM_VERTICES; i++) {
-        index[j  ] = 0;
-        index[j+1] = i;
-        index[j+2] = i+1;
-        j += 3;
+      for (size_t i = 0; i < index.size/2; i++) {
+        index[j] = j;
+        j++;
       }
     }
 
@@ -1358,27 +1304,6 @@ int main(int argc, char** argv) {
 #endif
 
 #if 1
-    // 
-    // @Incomplete: batch rendering...
-    // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
-    // 
-    for (size_t i = 0; i < positions.size; i++) {
-      float x = positions[i].x;
-      float y = positions[i].y;
-
-      glm::mat4 model = glm::mat4(1);
-      model = glm::translate(model, glm::vec3(x, y, 0));
-      model = glm::scale(model, glm::vec3(radius, radius, 0));
-
-      Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-      data->mvp = model;
-
-      bind_shader(basic_shader);
-      draw_call(GL_LINES, vert_array1);
-    }
-#endif
-
-#if 1
     for (size_t i = 0; i < grid.number_of_cells_per_dimension; i++) {
       for (size_t j = 0; j < grid.number_of_cells_per_dimension; j++) {
         float x = (i + 1/2.0f) * grid.cell_size - 1.0f;
@@ -1398,6 +1323,49 @@ int main(int argc, char** argv) {
         bind_shader(basic_shader);
         draw_call(GL_LINES, vert_array3);
       }
+    }
+#endif
+
+#if 1
+    // 
+    // @Incomplete: batch rendering...
+    // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
+    // 
+    for (size_t i = 0; i < positions.size; i++) {
+      float x = positions[i].x;
+      float y = positions[i].y;
+
+      {
+        glm::mat4 model = glm::mat4(1);
+        model = glm::translate(model, glm::vec3(x, y, 0));
+        model = glm::scale(model, glm::vec3(radius, radius, 0));
+
+        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+        data->mvp = model;
+        data->color[0] = r;
+        data->color[1] = 0.3f;
+        data->color[2] = 1.0f;
+
+        bind_shader(basic_shader);
+        draw_call(GL_LINES, vert_array1);
+      }
+
+#if 0
+      {
+        glm::mat4 model = glm::mat4(1);
+        model = glm::translate(model, glm::vec3(x, y, 0));
+        model = glm::scale(model, glm::vec3(radius+L, radius+L, 0));
+
+        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+        data->mvp = model;
+        data->color[0] = 0.0f;
+        data->color[1] = 1.0f;
+        data->color[2] = 0.00f;
+
+        bind_shader(basic_shader);
+        draw_call(GL_LINES, vert_array1);
+      }
+#endif
     }
 #endif
 
