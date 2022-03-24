@@ -34,13 +34,12 @@ typedef uint32 uint;
 #include "dynamic_array.cpp"
 
 
+const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
+const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
 const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
-
-const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
-const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
 
 const float  left_boundary = -1.0f;
 const float right_boundary =  1.0f;
@@ -128,7 +127,6 @@ struct Grid2D {
 
   // all cells are (cell_size x cell_size)
   float cell_size;
-
 };
 
 struct Graph {
@@ -153,14 +151,12 @@ struct Queue {
   uint max_size;
 };
 
-struct Result {
-  bool already_found_percolating_cluster = false;
-
+struct Cluster_Data {
   bool touches_left  = false;
   bool touches_right = false;
   bool touches_up    = false;
   bool touches_down  = false;
-  size_t percolating_cluster_size = 0;
+  size_t cluster_size = 0;
 };
 
 
@@ -266,29 +262,26 @@ bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
 }
 
-void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, Result* result) {
-  if (!result->already_found_percolating_cluster) {
-    float diameter = 2*radius;
+void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, Cluster_Data* result) {
+  float diameter = 2*radius;
 
-    bool touches_left  = pos.x <  left_boundary + diameter;
-    bool touches_right = pos.x > right_boundary - diameter;
-    bool touches_up    = pos.y < lower_boundary + diameter;
-    bool touches_down  = pos.y > upper_boundary - diameter;
+  bool touches_left  = pos.x <  left_boundary + diameter;
+  bool touches_right = pos.x > right_boundary - diameter;
+  bool touches_up    = pos.y < lower_boundary + diameter;
+  bool touches_down  = pos.y > upper_boundary - diameter;
 
-    bool* left  = &result->touches_left;
-    bool* right = &result->touches_right;
-    bool* up    = &result->touches_up;
-    bool* down  = &result->touches_down;
+  bool* left  = &result->touches_left;
+  bool* right = &result->touches_right;
+  bool* up    = &result->touches_up;
+  bool* down  = &result->touches_down;
 
-    *left  = *left  ? *left  : touches_left;
-    *right = *right ? *right : touches_right;
-    *up    = *up    ? *up    : touches_up;
-    *down  = *down  ? *down  : touches_down;
+  *left  = *left  ? *left  : touches_left;
+  *right = *right ? *right : touches_right;
+  *up    = *up    ? *up    : touches_up;
+  *down  = *down  ? *down  : touches_down;
 
-    if (*up && *down || *left && *right) {
-      result->already_found_percolating_cluster = true;
-      result->percolating_cluster_size = cluster_size;
-    }
+  if (*up && *down || *left && *right) {
+    result->cluster_size = cluster_size;
   }
 }
 
@@ -638,7 +631,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, const dynamic_array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, dynamic_array<uint>* cluster_sizes, Result* result) {
+void breadth_first_search(const Graph* graph, Queue* queue, const dynamic_array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, dynamic_array<uint>* cluster_sizes, Cluster_Data* result) {
 
   uint* size = array_add(cluster_sizes);
 
@@ -725,7 +718,12 @@ Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
   static const uint TAG_NOT_FOUND  = (uint) -1;
   static const string vertex_tag   = make_string("#vertex");
   static const string fragment_tag = make_string("#fragment");
-  static const string tags[]       = { vertex_tag, fragment_tag, make_string("") };
+  static const string tags[]       = { vertex_tag, fragment_tag };
+
+  bool vertex_found   = false;
+  bool fragment_found = false;
+  bool vertex_two_or_more_occurrences   = false;
+  bool fragment_two_or_more_occurrences = false;
 
   string shaders[2] = {};
 
@@ -734,9 +732,17 @@ Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
   string* current_shader = NULL;
 
   while (*cursor != '\0') {
+    bool vertex   = string_compare(cursor, tags[0]);
+    bool fragment = string_compare(cursor, tags[1]); 
+
+    vertex_two_or_more_occurrences   = vertex_two_or_more_occurrences   || (vertex_found    && vertex);
+    fragment_two_or_more_occurrences = fragment_two_or_more_occurrences || (fragment_found  && fragment);
+    vertex_found                     = vertex_found   || vertex;
+    fragment_found                   = fragment_found || fragment;
+    
     index = TAG_NOT_FOUND;
-    index = string_compare(cursor, tags[0]) ? 0 : index;
-    index = string_compare(cursor, tags[1]) ? 1 : index;
+    index = vertex   ? 0 : index;
+    index = fragment ? 1 : index;
 
     if (index == TAG_NOT_FOUND) {
       if (current_shader) current_shader->count++;
@@ -749,8 +755,10 @@ Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
     }
   }
 
-  assert(shaders[0].data && shaders[0].count &&   "vertex shader was not found in a file! it should be specified with a '#vertex' tag");
-  assert(shaders[1].data && shaders[1].count && "fragment shader was not found in a file! it should be specified with a '#fragment' tag");
+  assert(shaders[0].data && shaders[0].count && "vertex shader was not found in a source! it should be specified with a '#vertex' tag");
+  assert(shaders[1].data && shaders[1].count && "fragment shader was not found in a source! it should be specified with a '#fragment' tag");
+  assert(!vertex_two_or_more_occurrences     && "there are multiple #vertex shader tags in a source, but expected only one!");
+  assert(!fragment_two_or_more_occurrences   && "there are multiple #fragment shader tags in a source, but expected only one!");
 
   return { shaders[0], shaders[1] };
 }
@@ -1063,7 +1071,7 @@ int main(int argc, char** argv) {
 #if 1
   {
     printf("[..]\n");
-    printf("[..] Random walk ... \n");
+    printf("[..] Starting random walk ... \n");
     printf("[..] Finished random walk in := ");
     measure_scope();
     process_random_walk(&grid, &positions, radius, max_random_walking_distance);
@@ -1112,7 +1120,7 @@ int main(int argc, char** argv) {
 
   defer { free(queue.data); };
 
-  Result percolation;
+  Cluster_Data percolation;
 
   {
     printf("[..]\n");
@@ -1122,21 +1130,29 @@ int main(int argc, char** argv) {
 
     for (size_t i = 0; i < graph.count; i++) {
       if (!hash_table[i]) {
-        Result result;
+        Cluster_Data result;
 
         breadth_first_search(&graph, &queue, &positions, hash_table, i, radius, &cluster_sizes, &result);
-        percolation = percolation.already_found_percolating_cluster ? percolation : result;
+
+        bool found_larger_cluster = result.cluster_size > percolation.cluster_size;
+        percolation = found_larger_cluster ? result : percolation;
       }
     }
   }
   //assert(check_hash_table_is_filled_up(hash_table, N));
 
+  uint max_size = cluster_sizes[0];
+  for (size_t i = 0; i < cluster_sizes.size; i++) {
+    max_size = cluster_sizes[i] > max_size ? cluster_sizes[i] : max_size;
+  }
 
   {
+    printf("[..]\n");
     printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
-    printf("[..] Percolating cluster size := %u\n",  percolation.percolating_cluster_size);
+    printf("[..] Percolating cluster size := %u\n",  percolation.cluster_size);
+    printf("[..] Largest cluster size     := %u\n",  max_size);
     printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
-    #if 0
+    #if 1
     printf("[..] Cluster sizes := [");
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
