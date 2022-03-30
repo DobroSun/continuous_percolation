@@ -17,6 +17,10 @@
 #include "malloc.h"
 #include "windows.h"
 
+#pragma comment(lib, "Dependencies\\GLEW\\lib\\Release\\x64\\glew32s.lib")
+#pragma comment(lib, "Dependencies\\GLFW\\lib-vc2019\\glfw3_mt.lib")
+#pragma comment(lib, "opengl32.lib")
+
 typedef int8_t  int8;
 typedef int16_t int16;
 typedef int32_t int32;
@@ -54,7 +58,7 @@ const float upper_boundary =  1.0f;
 #define square(x)     ( (x) * (x) )
 #define round_down(x) ( (size_t)(round((float)(x) + 0.5f) - 1) )
 #define array_size(x) ( sizeof( x )/sizeof( *(x) ) )
-#define make_string(x) { (x), sizeof(x)-1 }
+#define make_string(x) { (char* )(x), sizeof(x)-1 }
 
 #define measure_scope() Timer ANONYMOUS_NAME
 
@@ -760,8 +764,8 @@ error:
   if (!status_vs) glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &message_size_vs);
   if (!status_fs) glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &message_size_fs);
 
-  if (!status_vs) message_vs = (char*) alloca(message_size_vs);
-  if (!status_fs) message_fs = (char*) alloca(message_size_fs);
+  message_vs = (char*) alloca(message_size_vs);
+  message_fs = (char*) alloca(message_size_fs);
 
   if (!status_vs) glGetShaderInfoLog(vs, message_size_vs, &message_size_vs, message_vs);
   if (!status_fs) glGetShaderInfoLog(fs, message_size_fs, &message_size_fs, message_fs);

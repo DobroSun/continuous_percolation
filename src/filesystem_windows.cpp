@@ -4,10 +4,21 @@ struct File_Windows {
 };
 static_assert(sizeof(File) >= sizeof(File_Windows), "");
 
+static void convert_ascii_bytes_to_windows_string(const char* str, wchar_t* win, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        win[i] = str[i];
+    }
+    win[length] = L'\0';
+}
+
 bool file_open_windows(File* file, const char* filename) {
   File_Windows* f = (File_Windows*) file;
 
-  f->handle = CreateFile(filename,
+  int length = strlen(filename);
+  wchar_t* windows_filename = (wchar_t*) alloca((length + 1) * sizeof(wchar_t));
+  convert_ascii_bytes_to_windows_string(filename, windows_filename, length);
+
+  f->handle = CreateFile(windows_filename,
                          GENERIC_READ | GENERIC_WRITE,
                          0,
                          NULL,

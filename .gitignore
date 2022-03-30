@@ -4,3 +4,7 @@
 *.pdb
 *.swp
 *.json
+*.vs
+*.vcxproj*
+
+x64/

@@ -1,1 +1,0 @@
-cl.exe /Zi /DEBUG /IDependencies\GLFW\include /IDependencies\GLEW\include /IDependencies\GLM src\main.cpp shell32.lib user32.lib gdi32.lib opengl32.lib Dependencies\GLFW\lib-vc2019\glfw3_mt.lib Dependencies\GLEW\lib\Release\x64\glew32s.lib
