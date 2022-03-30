@@ -1,16 +1,11 @@
-# Installation:
-Не смог запустить проект с помощью MinGW поэтому использую компилятор установленный в Visual Studio (MSVC)
+# How to run:
+1) open a command prompt
+2) git clone https://github.com/DobroSun/continuous_percolation.git
+3) cd continuous_percolation
 
-# Чтобы запустить проект:
-* найти папку с установленной Visual Studio, перейти в папку VC и найти файл vcvarsall.bat. 
-* В файле проекта startup.bat прописать путь к файлу vcvarsall.bat. Затем строчкой ниже указать директорию в которой лежит наш проект. 
-* Перейти в командной строке в директорию с проектом
-```
-startup.bat
-```
-```
-build.bat
-```
-```
-main.exe
-```
+4) Open continuous_percolation.sln project file in Visual Studio.
+5) Choose configuration you want to run (or use the default one): x64, Debug
+5) Ctrl + Shift + B      // to build a file.
+
+6) x64/Debug/continuous_percolation.exe
+
