@@ -1,26 +1,5 @@
 #define GLEW_STATIC
 
-#include "GL/glew.h"
-#include "GLFW/glfw3.h"
-
-#include "glm/glm.hpp"
-#include "glm/gtc/matrix_transform.hpp"
-
-#include <cstdlib>
-#include <cassert>
-#include <cstdio>
-#include <ctime>
-#include <cstdint>
-
-#include <chrono>
-
-#include "malloc.h"
-#include "windows.h"
-
-#pragma comment(lib, "Dependencies\\GLEW\\lib\\Release\\x64\\glew32s.lib")
-#pragma comment(lib, "Dependencies\\GLFW\\lib-vc2019\\glfw3_mt.lib")
-#pragma comment(lib, "opengl32.lib")
-
 typedef int8_t  int8;
 typedef int16_t int16;
 typedef int32_t int32;
@@ -33,9 +12,6 @@ typedef uint64_t uint64;
 
 typedef uint32 uint;
 
-#include "filesystem_api.cpp"
-#include "filesystem_windows.cpp"
-#include "dynamic_array.cpp"
 
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
@@ -745,7 +721,6 @@ unsigned create_shader(string vertex, string fragment) {
   glAttachShader(program, fs);
 
   glLinkProgram(program);
-  glValidateProgram(program);
 
   glDetachShader(program, vs);
   glDetachShader(program, fs);
@@ -764,8 +739,11 @@ error:
   if (!status_vs) glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &message_size_vs);
   if (!status_fs) glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &message_size_fs);
 
-  message_vs = (char*) alloca(message_size_vs);
-  message_fs = (char*) alloca(message_size_fs);
+  message_vs = (char*) alloca(message_size_vs + 1);
+  message_fs = (char*) alloca(message_size_fs + 1);
+
+  memset(message_vs, 0, message_size_vs+1);
+  memset(message_fs, 0, message_size_fs+1);
 
   if (!status_vs) glGetShaderInfoLog(vs, message_size_vs, &message_size_vs, message_vs);
   if (!status_fs) glGetShaderInfoLog(fs, message_size_fs, &message_size_fs, message_fs);
@@ -834,10 +812,8 @@ struct Shader {
 };
 
 struct Basic_Shader_Data {
-  int uniform_color = 0;
   int uniform_mvp   = 0;
 
-  float color[4];
   glm::mat4 mvp;
 };
 
@@ -946,12 +922,11 @@ void draw_call(GLenum draw_mode, Vertex_Array va) {
 void basic_shader_uniform(void* data) {
   Basic_Shader_Data* s = (Basic_Shader_Data*) data;
 
-  glUniform4f       (s->uniform_color, s->color[0], s->color[1], s->color[2], s->color[3]);
   glUniformMatrix4fv(s->uniform_mvp,   1, GL_FALSE, (float*) &s->mvp);
 }
 
 
-
+#if 0
 int main(int argc, char** argv) {
   init_filesystem_api();
 
@@ -1104,7 +1079,7 @@ int main(int argc, char** argv) {
   {
     printf("[..]\n");
     printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
-    printf("[..] Percolating cluster size := %u\n",  percolation.cluster_size);
+    printf("[..] Percolating cluster size := %zu\n",  percolation.cluster_size);
     printf("[..] Largest cluster size     := %u\n",  max_size);
     printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
     #if 1
@@ -1158,129 +1133,6 @@ int main(int argc, char** argv) {
 
   glEnable(GL_DEBUG_OUTPUT);
   glDebugMessageCallback(gl_debug_callback, NULL);
-
-
-
-
-
-
-
-  Shader basic_shader;
-  Basic_Shader_Data data;
-  {
-    Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
-    basic_shader.program       = create_shader(shaders.vertex, shaders.fragment);
-    basic_shader.setup_uniform = basic_shader_uniform;
-    basic_shader.data          = &data;
-
-    data.uniform_mvp   = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
-    data.uniform_color = glGetUniformLocation(basic_shader.program, "uniform_color");
-    assert(data.uniform_mvp   != -1);
-    assert(data.uniform_color != -1);
-  }
-
-  Vertex_Array vert_array1;
-  {
-    const uint NUM_VERTICES = 40;
-
-    dynamic_array<float>  vertex;
-    dynamic_array<uint16> index;
-    array_resize(&vertex, NUM_VERTICES * 2);
-    array_resize(&index , NUM_VERTICES * 2);
-
-    defer { array_free(&vertex); };
-    defer { array_free(&index); };
-
-
-    {
-      float  a = 0;
-      float da = TAU / (double)(NUM_VERTICES-2);
-      for (size_t i = 0; i < vertex.size; i += 2) {
-        vertex[i+0] = cos(a);
-        vertex[i+1] = sin(a);
-        a += da;
-      }
-
-      size_t j = 0;
-      for (size_t i = 0; i < index.size/2; i++) {
-        index[j] = j;
-        j++;
-      }
-    }
-
-    Create_Vertex_Buffer vbo;
-    Create_Index_Buffer<uint16> ibo;
-
-    vbo.data = vertex.data;
-    vbo.size = vertex.size;
-
-    ibo.data = index.data;
-    ibo.size = index.size;
-
-    vert_array1 = create_vertex_array(vbo, ibo);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
-    add_vertex_attribute(va);
-  }
-
-
-  Vertex_Array vert_array2;
-  {
-
-    const float lines[] = {
-      -1.0f, -1.0f,
-       1.0f,  1.0f,
-    };
-
-    Create_Vertex_Buffer buffer;
-    buffer.data = lines;
-    buffer.size = array_size(lines);
-
-    vert_array2 = create_vertex_array(buffer);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*buffer.data) * 2;
-    add_vertex_attribute(va);
-  }
-
-
-  Vertex_Array vert_array3;
-  {
-    const float quad[] = {
-      -0.5f, -0.5f,
-      -0.5f,  0.5f,
-       0.5f, -0.5f,
-       0.5f,  0.5f,
-    };
-
-    const uint8 indices[] = {
-      0, 1,
-      0, 2,
-      1, 3,
-      2, 3,
-    };
-
-    Create_Vertex_Buffer vertex;
-    vertex.data = quad;
-    vertex.size = array_size(quad);
-
-    Create_Index_Buffer<uint8> index;
-    index.data = indices;
-    index.size = array_size(indices);
-
-    vert_array3 = create_vertex_array(vertex, index);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes      = sizeof(*vertex.data) * 2;
-    add_vertex_attribute(va);
-  }
 
 
   float r = 0.0f;
@@ -1390,4 +1242,176 @@ int main(int argc, char** argv) {
   glfwTerminate();
   return 0;
 }
+#endif
 
+static Vertex_Array circles;
+static Vertex_Array lines;
+static Vertex_Array quads;
+static Shader            basic_shader;
+static Basic_Shader_Data basic_shader_data;
+
+void init_program() {
+    init_filesystem_api();
+    check_filesystem_api();
+
+    {
+        Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
+        basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
+        basic_shader.setup_uniform = basic_shader_uniform;
+        basic_shader.data = &basic_shader_data;
+
+        basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
+        assert(basic_shader_data.uniform_mvp != -1);
+    }
+    {
+        const uint NUM_VERTICES = 40;
+
+        dynamic_array<float>  vertex;
+        dynamic_array<uint16> index;
+        array_resize(&vertex, NUM_VERTICES * 2);
+        array_resize(&index, NUM_VERTICES * 2);
+
+        defer{ array_free(&vertex); };
+        defer{ array_free(&index); };
+
+        {
+            float  a = 0;
+            float da = TAU / (double)(NUM_VERTICES - 2);
+            for (size_t i = 0; i < vertex.size; i += 2) {
+                vertex[i + 0] = cos(a);
+                vertex[i + 1] = sin(a);
+                a += da;
+            }
+
+            size_t j = 0;
+            for (size_t i = 0; i < index.size / 2; i++) {
+                index[j] = j;
+                j++;
+            }
+        }
+
+        Create_Vertex_Buffer vbo;
+        Create_Index_Buffer<uint16> ibo;
+
+        vbo.data = vertex.data;
+        vbo.size = vertex.size;
+
+        ibo.data = index.data;
+        ibo.size = index.size;
+
+        circles = create_vertex_array(vbo, ibo);
+
+        Vertex_Attribute va;
+        va.attribute_index = 0;
+        va.number_of_values_in_an_attribute = 2;
+        va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+        add_vertex_attribute(va);
+    }
+    {
+        const float linesp[] = {
+          -1.0f, -1.0f,
+           1.0f,  1.0f,
+        };
+
+        Create_Vertex_Buffer buffer;
+        buffer.data = linesp;
+        buffer.size = array_size(linesp);
+
+        lines = create_vertex_array(buffer);
+
+        Vertex_Attribute va;
+        va.attribute_index = 0;
+        va.number_of_values_in_an_attribute = 2;
+        va.size_of_one_vertex_in_bytes = sizeof(*buffer.data) * 2;
+        add_vertex_attribute(va);
+    }
+    {
+        const float quad[] = {
+          -0.5f, -0.5f,
+          -0.5f,  0.5f,
+           0.5f, -0.5f,
+           0.5f,  0.5f,
+        };
+
+        const uint8 indices[] = {
+          0, 1,
+          0, 2,
+          1, 3,
+          2, 3,
+        };
+
+        Create_Vertex_Buffer vertex;
+        vertex.data = quad;
+        vertex.size = array_size(quad);
+
+        Create_Index_Buffer<uint8> index;
+        index.data = indices;
+        index.size = array_size(indices);
+
+        quads = create_vertex_array(vertex, index);
+
+        Vertex_Attribute va;
+        va.attribute_index = 0;
+        va.number_of_values_in_an_attribute = 2;
+        va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+        add_vertex_attribute(va);
+    }
+}
+
+void update_and_render() {
+
+    static bool show_demo_window = true;
+    static bool show_another_window = false;
+
+    ImGui::NewFrame();
+
+    // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+    if (show_demo_window)
+        ImGui::ShowDemoWindow(&show_demo_window);
+
+    // 2. Show a simple window that we create ourselves. We use a Begin/End pair to created a named window.
+    {
+        static float f = 0.0f;
+        static int counter = 0;
+
+        ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+
+        ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+        ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
+        ImGui::Checkbox("Another Window", &show_another_window);
+
+        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+
+        if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
+            counter++;
+        ImGui::SameLine();
+        ImGui::Text("counter = %d", counter);
+
+        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+        ImGui::End();
+    }
+
+    // 3. Show another simple window.
+    if (show_another_window)
+    {
+        ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+        ImGui::Text("Hello from another window!");
+        if (ImGui::Button("Close Me"))
+            show_another_window = false;
+        ImGui::End();
+    }
+    ImGui::Render();
+
+    {
+        bind_vertex_array(0);
+        bind_vertex_buffer(0);;
+        bind_index_buffer(0);
+        glUseProgram(0);
+
+        Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+        data->mvp = glm::mat4(1);
+
+        bind_shader(basic_shader);
+        draw_call(GL_LINES, lines);
+    }
+}

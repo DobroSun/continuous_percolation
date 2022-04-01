@@ -69,6 +69,13 @@ size_t file_get_size_windows(File* file) {
   return (hi64 << sizeof(DWORD)) | lo64;
 }
 
+void check_filesystem_api() {
+    assert(file_open);
+    assert(file_close);
+    assert(file_read);
+    assert(file_get_size);
+}
+
 void init_filesystem_api() {
   file_open     = file_open_windows;
   file_close    = file_close_windows;
