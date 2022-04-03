@@ -1202,13 +1202,13 @@ static Vertex_Array quads   = {};
 static Shader            basic_shader = {};
 static Basic_Shader_Data basic_shader_data = {};
 
+static Thread computation_thread = {};
 static Thread_Data thread_data   = {};
-static HANDLE computation_thread = NULL;
 
 static int64 result_largest_cluster_size = 0;
 
-static DWORD computation_thread_proc(LPVOID parameter) {
-  Thread_Data data = *(Thread_Data*) parameter;
+static int computation_thread_proc(void* param) {
+  Thread_Data data = *(Thread_Data*) param;
 
   size_t largest_cluster_size;
   do_the_thing(data.particle_radius,
@@ -1222,7 +1222,10 @@ static DWORD computation_thread_proc(LPVOID parameter) {
 
 void init_program() {
     init_filesystem_api();
+    init_threads_api();
+
     check_filesystem_api();
+    check_threads_api();
 
     {
       uint seed = time(NULL);
@@ -1230,7 +1233,7 @@ void init_program() {
     }
 
     {
-      // Initialize default data;
+      // Initialize default input;
       Thread_Data* data = &thread_data;
       data->particle_radius               = 0.1;
       data->jumping_conductivity_distance = 1.5 * data->particle_radius;
@@ -1347,8 +1350,7 @@ void init_program() {
 
 void update_and_render() {
   static bool show_demo_window = false;
-  static bool is_processing_data = false;
-  static bool want_user_confirmation_for_reset = false;
+  static bool thread_is_paused = false;
 
   ImGuiIO& io = ImGui::GetIO();
 
@@ -1376,48 +1378,33 @@ void update_and_render() {
     ImGui::Text("Packing factor                := %.3f", thread_data.packing_factor);
     ImGui::Text("Largest cluster size          := %lu",  result_largest_cluster_size);
 
+
     if (ImGui::Button("Start")) {
-      if (!is_processing_data) {
-        // destroy current thread if there is one and start a new thread.
-        if (computation_thread) TerminateThread(computation_thread, 0);
-        computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+      if (thread_is_paused) {
+        resume_thread(&computation_thread);
+        thread_is_paused = false;
+      } else {
+        if (!is_thread_running(&computation_thread)) {
+          start_thread(&computation_thread, computation_thread_proc, &thread_data);
+        }
       }
-      is_processing_data = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Reset")) {
-      want_user_confirmation_for_reset = true;
+    if (ImGui::Button("Pause")) {
+      if (is_thread_running(&computation_thread)) {
+        suspend_thread(&computation_thread);
+        thread_is_paused = true;
+      }
     }
     ImGui::SameLine();
     if (ImGui::Button("Stop")) {
-      SuspendThread(computation_thread);
-      is_processing_data = false;
+      if (is_thread_running(&computation_thread)) {
+        kill_thread(&computation_thread);
+      }
     }
 
     auto framerate = io.Framerate;
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
-
-    ImGui::End();
-  }
-
-  if (want_user_confirmation_for_reset) {
-    ImGui::Begin("Are you sure want to reset everything?");
-    if (ImGui::Button("Reset")) {
-      // 
-      // reset thread_data;
-      // 
-      if (is_processing_data) {
-        if (computation_thread) TerminateThread(computation_thread, 0);
-        computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
-      }
-      want_user_confirmation_for_reset = false;
-    }
-
-    ImGui::SameLine();
-
-    if (ImGui::Button("Cancel")) {
-      want_user_confirmation_for_reset = false;
-    }
 
     ImGui::End();
   }

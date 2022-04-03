@@ -32,6 +32,8 @@
 
 #include "filesystem_api.cpp"
 #include "filesystem_windows.cpp"
+#include "threads_api.cpp"
+#include "threads_windows.cpp"
 #include "dynamic_array.cpp"
 #include "main.cpp"
 
