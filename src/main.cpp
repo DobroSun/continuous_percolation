@@ -731,10 +731,10 @@ unsigned create_shader(string vertex, string fragment) {
   return program;
 
 error:
-  int   message_size_vs;
-  int   message_size_fs;
-  char* message_vs;
-  char* message_fs;
+  int   message_size_vs = 0;
+  int   message_size_fs = 0;
+  char* message_vs = NULL;
+  char* message_fs = NULL;
 
   if (!status_vs) glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &message_size_vs);
   if (!status_fs) glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &message_size_fs);
@@ -812,8 +812,7 @@ struct Shader {
 };
 
 struct Basic_Shader_Data {
-  int uniform_mvp   = 0;
-
+  int uniform_mvp = 0;
   glm::mat4 mvp;
 };
 
@@ -922,22 +921,11 @@ void draw_call(GLenum draw_mode, Vertex_Array va) {
 void basic_shader_uniform(void* data) {
   Basic_Shader_Data* s = (Basic_Shader_Data*) data;
 
-  glUniformMatrix4fv(s->uniform_mvp,   1, GL_FALSE, (float*) &s->mvp);
+  glUniformMatrix4fv(s->uniform_mvp, 1, GL_FALSE, (float*) &s->mvp);
 }
 
-
-#if 0
-int main(int argc, char** argv) {
-  init_filesystem_api();
-
-  float radius = 0.05;
-  float L      = 1.5 * radius;
-  float packing_factor = 0.3;
+void do_the_thing(float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
-
-
-  uint seed = time(NULL);
-  srand(seed);
 
   dynamic_array<Vec2> positions;
   array_reserve(&positions, 200000000);
@@ -1076,68 +1064,26 @@ int main(int argc, char** argv) {
     max_size = cluster_sizes[i] > max_size ? cluster_sizes[i] : max_size;
   }
 
+  *largest_cluster_size = max_size;
+
   {
     printf("[..]\n");
     printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
     printf("[..] Percolating cluster size := %zu\n",  percolation.cluster_size);
     printf("[..] Largest cluster size     := %u\n",  max_size);
     printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
-    #if 1
     printf("[..] Cluster sizes := [");
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
     }
-    #endif
-
     puts("");
     puts("");
     puts("");
   }
-  // 
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  if (!glfwInit()) {
-    puts("[..] failed glfwInit()");
-    return 1;
-  }
-
-  GLFWwindow* window = glfwCreateWindow(640, 640, "The World", NULL, NULL);
-  if (!window) {
-    puts("[..] failed glfwCreateWindow()");
-    glfwTerminate();
-    return 1;
-  }
-
-  glfwMakeContextCurrent(window); // make opengl context.
-  glfwSwapInterval(1);            // synchronizes our frame rate with vsync (60 fps)
-
-  if (glewInit() != GLEW_OK) {
-    puts("[..] failed glewInit()");
-    return -1;
-  }
-
-  printf("GL version := %s\n", glGetString(GL_VERSION));
-
-  glEnable(GL_DEBUG_OUTPUT);
-  glDebugMessageCallback(gl_debug_callback, NULL);
-
-
-  float r = 0.0f;
-  float increment = 0.05f;
-
+#if 0
+int main(int argc, char** argv) {
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1244,15 +1190,52 @@ int main(int argc, char** argv) {
 }
 #endif
 
-static Vertex_Array circles;
-static Vertex_Array lines;
-static Vertex_Array quads;
-static Shader            basic_shader;
-static Basic_Shader_Data basic_shader_data;
+struct Thread_Data {
+  float particle_radius;
+  float jumping_conductivity_distance;
+  float packing_factor;
+};
+
+static Vertex_Array circles = {};
+static Vertex_Array lines   = {};
+static Vertex_Array quads   = {};
+static Shader            basic_shader = {};
+static Basic_Shader_Data basic_shader_data = {};
+
+static Thread_Data thread_data   = {};
+static HANDLE computation_thread = NULL;
+
+static int64 result_largest_cluster_size = 0;
+
+static DWORD computation_thread_proc(LPVOID parameter) {
+  Thread_Data data = *(Thread_Data*) parameter;
+
+  size_t largest_cluster_size;
+  do_the_thing(data.particle_radius,
+               data.jumping_conductivity_distance,
+               data.packing_factor,
+               &largest_cluster_size);
+
+  InterlockedExchange64(&result_largest_cluster_size, (int64) largest_cluster_size);
+  return 0;
+}
 
 void init_program() {
     init_filesystem_api();
     check_filesystem_api();
+
+    {
+      uint seed = time(NULL);
+      srand(seed);
+    }
+
+    {
+      // Initialize default data;
+      Thread_Data* data = &thread_data;
+      data->particle_radius               = 0.1;
+      data->jumping_conductivity_distance = 1.5 * data->particle_radius;
+      data->packing_factor                = 0.7;
+    }
 
     {
         Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
@@ -1356,62 +1339,100 @@ void init_program() {
         va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
         add_vertex_attribute(va);
     }
+
+    {
+      ImGui::StyleColorsLight();
+    }
 }
 
 void update_and_render() {
+  static bool show_demo_window = false;
+  static bool is_processing_data = false;
+  static bool want_user_confirmation_for_reset = false;
 
-    static bool show_demo_window = true;
-    static bool show_another_window = false;
+  ImGuiIO& io = ImGui::GetIO();
 
-    ImGui::NewFrame();
+  ImGui::NewFrame();
+  if (show_demo_window) {
+      ImGui::ShowDemoWindow(&show_demo_window);
+  }
 
-    // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-    if (show_demo_window)
-        ImGui::ShowDemoWindow(&show_demo_window);
+  {
+    ImGui::Begin("Control Window");
+    ImGui::Checkbox("Demo Window", &show_demo_window);
 
-    // 2. Show a simple window that we create ourselves. We use a Begin/End pair to created a named window.
-    {
-        static float f = 0.0f;
-        static int counter = 0;
 
-        ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+    static const float step      = 0.0f;
+    static const float step_fast = 0.0f;
+    static const char* format    = "%.4f";
+    static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
-        ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-        ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-        ImGui::Checkbox("Another Window", &show_another_window);
+    ImGui::InputFloat("Particle radius",               &thread_data.particle_radius,               step, step_fast, format, flags);
+    ImGui::InputFloat("Jumping conductivity distance", &thread_data.jumping_conductivity_distance, step, step_fast, format, flags);
+    ImGui::InputFloat("Packing factor",                &thread_data.packing_factor,                step, step_fast, format, flags);
 
-        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+    ImGui::Text("Particle radius               := %.3f", thread_data.particle_radius);
+    ImGui::Text("Jumping conductivity distance := %.3f", thread_data.jumping_conductivity_distance);
+    ImGui::Text("Packing factor                := %.3f", thread_data.packing_factor);
+    ImGui::Text("Largest cluster size          := %lu",  result_largest_cluster_size);
 
-        if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-            counter++;
-        ImGui::SameLine();
-        ImGui::Text("counter = %d", counter);
-
-        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-        ImGui::End();
+    if (ImGui::Button("Start")) {
+      if (!is_processing_data) {
+        // destroy current thread if there is one and start a new thread.
+        if (computation_thread) TerminateThread(computation_thread, 0);
+        computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+      }
+      is_processing_data = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+      want_user_confirmation_for_reset = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) {
+      SuspendThread(computation_thread);
+      is_processing_data = false;
     }
 
-    // 3. Show another simple window.
-    if (show_another_window)
-    {
-        ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-        ImGui::Text("Hello from another window!");
-        if (ImGui::Button("Close Me"))
-            show_another_window = false;
-        ImGui::End();
+    auto framerate = io.Framerate;
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
+
+    ImGui::End();
+  }
+
+  if (want_user_confirmation_for_reset) {
+    ImGui::Begin("Are you sure want to reset everything?");
+    if (ImGui::Button("Reset")) {
+      // 
+      // reset thread_data;
+      // 
+      if (is_processing_data) {
+        if (computation_thread) TerminateThread(computation_thread, 0);
+        computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+      }
+      want_user_confirmation_for_reset = false;
     }
-    ImGui::Render();
 
-    {
-        bind_vertex_array(0);
-        bind_vertex_buffer(0);;
-        bind_index_buffer(0);
-        glUseProgram(0);
+    ImGui::SameLine();
 
-        Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-        data->mvp = glm::mat4(1);
-
-        bind_shader(basic_shader);
-        draw_call(GL_LINES, lines);
+    if (ImGui::Button("Cancel")) {
+      want_user_confirmation_for_reset = false;
     }
+
+    ImGui::End();
+  }
+  ImGui::Render();
+
+  {
+    bind_vertex_array(0);
+    bind_vertex_buffer(0);;
+    bind_index_buffer(0);
+    glUseProgram(0);
+
+    Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+    data->mvp = glm::mat4(1);
+
+    bind_shader(basic_shader);
+    draw_call(GL_LINES, lines);
+  }
 }
