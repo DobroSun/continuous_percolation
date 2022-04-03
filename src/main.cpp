@@ -16,7 +16,7 @@ typedef uint32 uint;
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
 const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
-const size_t MEMORY_ALLOCATION_SIZE = 1e10;  // ~ 10 gigabytes.
+const size_t MEMORY_ALLOCATION_SIZE = 1e6;//1e10;  // ~ 10 gigabytes.
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
@@ -90,6 +90,78 @@ struct Vertex_And_Fragment_Shader_Sources {
 struct Vec2 {
   float x, y;
 };
+
+struct Vec4 {
+  float x, y, z, w;
+};
+
+struct Matrix4x4 {
+  float m11, m12, m13, m14, 
+        m21, m22, m23, m24,
+        m31, m32, m33, m34,
+        m41, m42, m43, m44;
+};
+
+Matrix4x4 box_to_box_matrix(Vec4 from_min, Vec4 from_max, Vec4 to_min, Vec4 to_max) {
+  // works on 2D plane.
+  // min -> (-1.0f, -1.0f)
+  // max -> ( 1.0f,  1.0f)
+
+  float x1 = from_min.x;
+  float x2 = from_max.x;
+
+  float y1 = from_min.y;
+  float y2 = from_max.y;
+
+  float e1 = to_min.x;
+  float e2 = to_max.x;
+
+  float f1 = to_min.y;
+  float f2 = to_max.y;
+
+  Matrix4x4 m;
+  m.m11 = (e2 - e1) / (x2 - x1); m.m12 = 0;                     m.m13 = 0; m.m14 = -x1 * (e2 - e1) / (x2 - x1) + e1;
+  m.m21 = 0;                     m.m22 = (f2 - f1) / (y2 - y1); m.m23 = 0; m.m24 = -y1 * (f2 - f1) / (y2 - y1) + f1;
+  m.m31 = 0;                     m.m32 = 0;                     m.m33 = 0; m.m34 = 0; // don't use z
+  m.m41 = 0;                     m.m42 = 0;                     m.m43 = 0; m.m44 = 1;
+
+  return m;
+}
+
+Matrix4x4 translation_matrix(Vec2 vec) {
+  Matrix4x4 m;
+  m.m11 = 1; m.m12 = 0; m.m13 = 0; m.m14 = vec.x;
+  m.m21 = 0; m.m22 = 1; m.m23 = 0; m.m24 = vec.y;
+  m.m31 = 0; m.m32 = 0; m.m33 = 1; m.m34 = 0;
+  m.m41 = 0; m.m42 = 0; m.m43 = 0; m.m44 = 1;
+  return m;
+}
+
+Matrix4x4 transform_screen_space_to_normalized_space(float width, float height) {
+  const Vec4 from_min = { 0.0f, height, 0.0f, 1.0f };
+  const Vec4 from_max = { width, 0.0f,  0.0f, 1.0f };
+  const Vec4 to_min   = { -1.0f, -1.0f, 0.0f, 0.0f };
+  const Vec4 to_max   = {  1.0f,  1.0f, 0.0f, 0.0f };
+  return box_to_box_matrix(from_min, from_max, to_min, to_max);
+}
+
+Vec4 operator*(Matrix4x4 m, Vec4 v) { return { m.m11 * v.x + m.m12 * v.y + m.m13 * v.z + m.m14 * v.w, 
+                                               m.m21 * v.x + m.m22 * v.y + m.m23 * v.z + m.m24 * v.w, 
+                                               m.m31 * v.x + m.m32 * v.y + m.m33 * v.z + m.m34 * v.w,
+                                               m.m41 * v.x + m.m42 * v.y + m.m43 * v.z + m.m44 * v.w }; }
+
+
+Matrix4x4 operator*(Matrix4x4 m, Matrix4x4 n) {
+  Matrix4x4 r;
+  r.m11 = m.m11*n.m11 + m.m12*n.m21 + m.m13*n.m31 + m.m14*n.m41; r.m12 = m.m11*n.m12 + m.m12*n.m22 + m.m13*n.m32 + m.m14*n.m42; r.m13 = m.m11*n.m13 + m.m12*n.m23 + m.m13*n.m33 + m.m14*n.m43; r.m14 = m.m11*n.m14 + m.m12*n.m24 + m.m13*n.m34 + m.m14*n.m44;
+  r.m21 = m.m21*n.m11 + m.m22*n.m21 + m.m23*n.m31 + m.m24*n.m41; r.m22 = m.m21*n.m12 + m.m22*n.m22 + m.m23*n.m32 + m.m24*n.m42; r.m23 = m.m21*n.m13 + m.m22*n.m23 + m.m23*n.m33 + m.m24*n.m43; r.m24 = m.m21*n.m14 + m.m22*n.m24 + m.m23*n.m34 + m.m24*n.m44;
+  r.m31 = m.m31*n.m11 + m.m32*n.m21 + m.m33*n.m31 + m.m34*n.m41; r.m32 = m.m31*n.m12 + m.m32*n.m22 + m.m33*n.m32 + m.m34*n.m42; r.m33 = m.m31*n.m13 + m.m32*n.m23 + m.m33*n.m33 + m.m34*n.m43; r.m34 = m.m31*n.m14 + m.m32*n.m24 + m.m33*n.m34 + m.m34*n.m44;
+  r.m41 = m.m41*n.m11 + m.m42*n.m21 + m.m43*n.m31 + m.m44*n.m41; r.m42 = m.m41*n.m12 + m.m42*n.m22 + m.m43*n.m32 + m.m44*n.m42; r.m43 = m.m41*n.m13 + m.m42*n.m23 + m.m43*n.m33 + m.m44*n.m43; r.m44 = m.m41*n.m14 + m.m42*n.m24 + m.m43*n.m34 + m.m44*n.m44;
+  return r;
+}
+
+
+
 
 Vec2 operator+(Vec2 a, Vec2 b)  { return { a.x + b.x, a.y + b.y }; }
 Vec2 operator*(float c, Vec2 a) { return { c * a.x, c * a.y }; }
@@ -189,7 +261,7 @@ struct Shader {
 
 struct Basic_Shader_Data {
   int uniform_mvp = 0;
-  glm::mat4 mvp;
+  float* mvp; // 16 floats.
 };
 
 struct Thread_Data {
@@ -946,7 +1018,7 @@ void draw_call(GLenum draw_mode, Vertex_Array va) {
 void basic_shader_uniform(void* data) {
   Basic_Shader_Data* s = (Basic_Shader_Data*) data;
 
-  glUniformMatrix4fv(s->uniform_mvp, 1, GL_FALSE, (float*) &s->mvp);
+  glUniformMatrix4fv(s->uniform_mvp, 1, GL_TRUE, (float*) s->mvp);
 }
 
 
@@ -1265,8 +1337,11 @@ void update_and_render(GLFWwindow* window) {
   static bool show_visual_spheres_radius = true;
   static bool show_visual_spheres_conductivity = true;
 
-  static ImVec2 visual_ui_min = {};
-  static ImVec2 visual_ui_max = {};
+  static Vec4 visual_ui_min = {};
+  static Vec4 visual_ui_max = {};
+
+  int width, height;
+  glfwGetFramebufferSize(window, &width, &height);
 
   ImGuiIO& io = ImGui::GetIO();
 
@@ -1290,8 +1365,8 @@ void update_and_render(GLFWwindow* window) {
     v_max.x += ImGui::GetWindowPos().x;
     v_max.y += ImGui::GetWindowPos().y;
 
-    visual_ui_min = v_min;
-    visual_ui_max = v_max;
+    visual_ui_min = { v_min.x, v_min.y, 0, 1 };
+    visual_ui_max = { v_max.x, v_max.y, 0, 1 };
 
     ImGui::End();
   }
@@ -1354,17 +1429,13 @@ void update_and_render(GLFWwindow* window) {
 
     auto framerate = io.Framerate;
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
-    //ImGui::Text("width := %.3f; height := %.3f", (float) width, (float) height);
-    ImGui::Text("min  := (%.3f, %.3f); max  := (%.3f, %.3f)", visual_ui_min.x, visual_ui_min.y, visual_ui_max.x, visual_ui_max.y);
-    //ImGui::Text("norm := (%.3f, %.3f); norm := (%.3f, %.3f)", normalized_min_x, normalized_min_y, normalized_max_x, normalized_max_y);
+    // ImGui::Text("min  := (%.3f, %.3f); max  := (%.3f, %.3f)", visual_ui_min.x, visual_ui_min.y, visual_ui_max.x, visual_ui_max.y);
 
     ImGui::End();
   }
 
   // Render
   ImGui::Render();
-  int width, height;
-  glfwGetFramebufferSize(window, &width, &height);
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -1374,24 +1445,18 @@ void update_and_render(GLFWwindow* window) {
     bind_index_buffer(0);
     glUseProgram(0);
 
-    const float normalized_min_x = visual_ui_min.x * 2.0f / (float)width  - 1.0f;
-    const float normalized_max_x = visual_ui_max.x * 2.0f / (float)width  - 1.0f;
-    const float normalized_min_y = visual_ui_min.y * 2.0f / (float)height - 1.0f;
-    const float normalized_max_y = visual_ui_max.y * 2.0f / (float)height - 1.0f;
-
-    const float w = (normalized_max_x - normalized_min_x) / 2.0f;
-    const float h = (normalized_max_y - normalized_min_y) / 2.0f;
-
-    const float x =  normalized_min_x + w;
-    const float y = -normalized_min_y - h;
+    // y axis is flipped because screen coordinates increase from up to down. We can't workaround that :(
+    const Vec4 min = { -1.0f,  1.0f, 0.0f, 1.0f };
+    const Vec4 max = {  1.0f, -1.0f, 0.0f, 1.0f };
+    Matrix4x4 t = transform_screen_space_to_normalized_space(width, height);
+    visual_ui_min = t * visual_ui_min;
+    visual_ui_max = t * visual_ui_max;
 
 #if 1
-    glm::mat4 model = glm::mat4(1);
-    model = glm::translate(model, glm::vec3(x, y, 0));
-    model = glm::scale(model, glm::vec3(w, h, 0));
+    Matrix4x4 norm = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
 
     Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-    data->mvp = model;
+    data->mvp = (float*) &norm;
 
     bind_shader(basic_shader);
     draw_call(GL_LINES, lines);
@@ -1401,15 +1466,38 @@ void update_and_render(GLFWwindow* window) {
       for (size_t i = 0; i < global_grid.number_of_cells_per_dimension; i++) {
         for (size_t j = 0; j < global_grid.number_of_cells_per_dimension; j++) {
           float cell_size = global_grid.cell_size;
-          float x = (i + 1/2.0f) * cell_size - 1.0f;
-          float y = (j + 1/2.0f) * cell_size - 1.0f;
+          Vec2 p = { (i+1/2.0f) * cell_size, (j+1/2.0f) * cell_size }; // center quads.
+
+          float cap = global_grid.number_of_cells_per_dimension * cell_size;
+
+          printf("%d, %d\n", i, j);
+
+          Vec4 from_min = { 0.0f, 0.0f, 0.0f, 1.0f };
+          Vec4 from_max = { cap, cap, 0.0f, 1.0f };
+
+          Matrix4x4 model      = translation_matrix(p);
+          Matrix4x4 projection = box_to_box_matrix(from_min, from_max, visual_ui_min, visual_ui_max);
+          Matrix4x4 transform  = projection * model;
+
+          // x and y are normalized, they are from -1.0f to 1.0f.
+          // now we only need to map those from (-1.0f, -1.0f) ; (1.0f, 1.0f) to (visual_ui_min) ; (visual_ui_max)
+#if 0
+          const ImVec2 norm_min = {t.x - t.w*1.25f, t.y - t.h*1.25f};
+          const ImVec2 norm_max = {t.x + t.w- t.w*1.25f, t.y + t.h - t.h*1.25f};
+
+          x = x + norm_min.x - -1.0f;
+          y = y + norm_min.y - -1.0f;
+
+          x = x * (norm_max.x - norm_min.x) / (2.0f);
+          y = y * (norm_max.y - norm_min.y) / (2.0f);
 
           glm::mat4 model = glm::mat4(1);
           model = glm::translate(model, glm::vec3(x, y, 0));
           model = glm::scale(model, glm::vec3(cell_size, cell_size, 0));
+#endif
 
           Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = model;
+          data->mvp = (float*) &transform;
 
           bind_shader(basic_shader);
           draw_call(GL_LINES, quads);
@@ -1436,7 +1524,7 @@ void update_and_render(GLFWwindow* window) {
           model = glm::scale(model, glm::vec3(radius, radius, 0));
 
           Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = model;
+          data->mvp = (float*) &model;
 
           bind_shader(basic_shader);
           draw_call(GL_LINES, circles);
@@ -1448,7 +1536,7 @@ void update_and_render(GLFWwindow* window) {
           model = glm::scale(model, glm::vec3(radius+L, radius+L, 0));
 
           Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = model;
+          data->mvp = (float*) &model;
 
           bind_shader(basic_shader);
           draw_call(GL_LINES, circles);
