@@ -131,18 +131,7 @@ int main(int, char**)
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
         glfwPollEvents();
 
-        // Start the Dear ImGui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-
-        update_and_render();
-
-        // Rendering
-        int display_w, display_h;
-        glfwGetFramebufferSize(window, &display_w, &display_h);
-        glViewport(0, 0, display_w, display_h);
-
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        update_and_render(window);
 
         glfwSwapBuffers(window);
     }

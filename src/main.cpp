@@ -1348,15 +1348,40 @@ void init_program() {
     }
 }
 
-void update_and_render() {
-  static bool show_demo_window = false;
-  static bool thread_is_paused = false;
+void update_and_render(GLFWwindow* window) {
+  static bool show_demo_window  = false;
+  static bool show_visual_ui    = true;
+  static bool thread_is_paused  = false;
+
+  static ImVec2 visual_ui_min = {};
+  static ImVec2 visual_ui_max = {};
 
   ImGuiIO& io = ImGui::GetIO();
 
+  // Start the Dear ImGui frame
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
+
   if (show_demo_window) {
       ImGui::ShowDemoWindow(&show_demo_window);
+  }
+
+  if (show_visual_ui) {
+    ImGui::Begin("#", NULL, ImGuiWindowFlags_NoCollapse || ImGuiWindowFlags_NoResize || ImGuiWindowFlags_NoTitleBar || ImGuiWindowFlags_NoScrollbar);
+
+    ImVec2 v_min = ImGui::GetWindowContentRegionMin();
+    ImVec2 v_max = ImGui::GetWindowContentRegionMax();
+
+    v_min.x += ImGui::GetWindowPos().x;
+    v_min.y += ImGui::GetWindowPos().y;
+    v_max.x += ImGui::GetWindowPos().x;
+    v_max.y += ImGui::GetWindowPos().y;
+
+    visual_ui_min = v_min;
+    visual_ui_max = v_max;
+
+    ImGui::End();
   }
 
   {
@@ -1371,6 +1396,7 @@ void update_and_render() {
 
     ImGui::Begin("Control Window");
     ImGui::Checkbox("Demo Window", &show_demo_window);
+    ImGui::Checkbox("Visual UI", &show_visual_ui);
 
     ImGui::InputFloat("Particle radius",               &particle_radius,               step, step_fast, format, flags);
     ImGui::InputFloat("Jumping conductivity distance", &jumping_conductivity_distance, step, step_fast, format, flags);
@@ -1412,19 +1438,43 @@ void update_and_render() {
 
     auto framerate = io.Framerate;
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
+    //ImGui::Text("width := %.3f; height := %.3f", (float) width, (float) height);
+    ImGui::Text("min  := (%.3f, %.3f); max  := (%.3f, %.3f)", visual_ui_min.x, visual_ui_min.y, visual_ui_max.x, visual_ui_max.y);
+    //ImGui::Text("norm := (%.3f, %.3f); norm := (%.3f, %.3f)", normalized_min_x, normalized_min_y, normalized_max_x, normalized_max_y);
 
     ImGui::End();
   }
-  ImGui::Render();
 
-  {
+  // Render
+  ImGui::Render();
+  int width, height;
+  glfwGetFramebufferSize(window, &width, &height);
+  glViewport(0, 0, width, height);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  if (show_visual_ui) {
     bind_vertex_array(0);
     bind_vertex_buffer(0);;
     bind_index_buffer(0);
     glUseProgram(0);
 
+    const float normalized_min_x = visual_ui_min.x * 2.0f / (float)width  - 1.0f;
+    const float normalized_max_x = visual_ui_max.x * 2.0f / (float)width  - 1.0f;
+    const float normalized_min_y = visual_ui_min.y * 2.0f / (float)height - 1.0f;
+    const float normalized_max_y = visual_ui_max.y * 2.0f / (float)height - 1.0f;
+
+    const float w = (normalized_max_x - normalized_min_x) / 2.0f;
+    const float h = (normalized_max_y - normalized_min_y) / 2.0f;
+
+    const float x =  normalized_min_x + w;
+    const float y = -normalized_min_y - h;
+
+    glm::mat4 model = glm::mat4(1);
+    model = glm::translate(model, glm::vec3(x, y, 0));
+    model = glm::scale(model, glm::vec3(w, h, 0));
+
     Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-    data->mvp = glm::mat4(1);
+    data->mvp = model;
 
     bind_shader(basic_shader);
     draw_call(GL_LINES, lines);
