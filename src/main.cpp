@@ -16,6 +16,7 @@ typedef uint32 uint;
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
 const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
+const size_t MEMORY_ALLOCATION_SIZE = 1e10;  // ~ 10 gigabytes.
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
@@ -138,6 +139,82 @@ struct Cluster_Data {
   bool touches_down  = false;
   size_t cluster_size = 0;
 };
+
+struct Create_Vertex_Buffer {
+  const float* data;
+  size_t       size;
+};
+
+template<class T>
+struct Create_Index_Buffer {
+  const T* data;
+  size_t   size;
+};
+
+struct Vertex_Array {
+  uint vao = 0;
+  uint vbo = 0;
+  uint ibo = 0;
+
+  // @Incomplete:
+  // union {
+  //  struct ... 
+        uint vbo_attribute_index_in_enabled_array = 0;
+        uint vbo_number_of_vertices_to_draw       = 0;
+  //  };
+  //  struct ... 
+        GLenum ibo_type_of_indices           = 0;
+        uint   ibo_number_of_indices_to_draw = 0;
+        const void* ibo_indices_array        = NULL;
+  //  };
+  // };
+};
+
+// @Incomplete: could actually make this take 8 bytes instead of 16, but whatever.
+struct Vertex_Attribute {
+  uint16 attribute_index = 0;
+  uint16 number_of_values_in_an_attribute = 0;                         // should be 1, 2, 3 or 4.
+  uint16 size_of_one_vertex_in_bytes = 0;
+  uint16 size_to_an_attribute_from_beginning_of_a_vertex_in_bytes = 0; // should be 0 if there is only one attribute.
+
+  GLenum attribute_type = GL_FLOAT;
+  bool is_normalized = false;                                          // should be false if a value is normalized.
+};
+
+struct Shader {
+  uint program = 0;
+  void (*setup_uniform)(void*) = NULL;
+  void* data = NULL;
+};
+
+struct Basic_Shader_Data {
+  int uniform_mvp = 0;
+  glm::mat4 mvp;
+};
+
+struct Thread_Data {
+  void* memory;
+
+  float particle_radius;
+  float jumping_conductivity_distance;
+  float packing_factor;
+};
+
+static Vertex_Array circles = {};
+static Vertex_Array lines   = {};
+static Vertex_Array quads   = {};
+static Shader            basic_shader = {};
+static Basic_Shader_Data basic_shader_data = {};
+
+static Thread computation_thread = {};
+static Thread_Data thread_data   = {};
+
+static dynamic_array<Vec2> global_positions = {};
+static Grid2D              global_grid      = {};
+static Graph               global_graph     = {};
+
+static int64 result_largest_cluster_size = 0;
+
 
 
 bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
@@ -764,58 +841,6 @@ void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, G
 }
 
 
-struct Create_Vertex_Buffer {
-  const float* data;
-  size_t       size;
-};
-
-template<class T>
-struct Create_Index_Buffer {
-  const T* data;
-  size_t   size;
-};
-
-struct Vertex_Array {
-  uint vao = 0;
-  uint vbo = 0;
-  uint ibo = 0;
-
-  // @Incomplete:
-  // union {
-  //  struct ... 
-        uint vbo_attribute_index_in_enabled_array = 0;
-        uint vbo_number_of_vertices_to_draw       = 0;
-  //  };
-  //  struct ... 
-        GLenum ibo_type_of_indices           = 0;
-        uint   ibo_number_of_indices_to_draw = 0;
-        const void* ibo_indices_array        = NULL;
-  //  };
-  // };
-};
-
-// @Incomplete: could actually make this take 8 bytes instead of 16, but whatever.
-struct Vertex_Attribute {
-  uint16 attribute_index = 0;
-  uint16 number_of_values_in_an_attribute = 0;                         // should be 1, 2, 3 or 4.
-  uint16 size_of_one_vertex_in_bytes = 0;
-  uint16 size_to_an_attribute_from_beginning_of_a_vertex_in_bytes = 0; // should be 0 if there is only one attribute.
-
-  GLenum attribute_type = GL_FLOAT;
-  bool is_normalized = false;                                          // should be false if a value is normalized.
-};
-
-struct Shader {
-  uint program = 0;
-  void (*setup_uniform)(void*) = NULL;
-  void* data = NULL;
-};
-
-struct Basic_Shader_Data {
-  int uniform_mvp = 0;
-  glm::mat4 mvp;
-};
-
 void add_vertex_attribute(Vertex_Attribute va) {
   glEnableVertexAttribArray(va.attribute_index);
   glVertexAttribPointer(va.attribute_index, 
@@ -924,13 +949,14 @@ void basic_shader_uniform(void* data) {
   glUniformMatrix4fv(s->uniform_mvp, 1, GL_FALSE, (float*) &s->mvp);
 }
 
-void do_the_thing(float radius, float L, float packing_factor, size_t* largest_cluster_size) {
+
+void do_the_thing(void* memory, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
 
   dynamic_array<Vec2> positions;
-  array_reserve(&positions, 200000000);
-
-  defer { array_free(&positions); };
+  positions.data = (Vec2*) memory;
+  positions.size = 0;
+  positions.capacity = MEMORY_ALLOCATION_SIZE;
 
   {
     printf("[..] Generating nodes ... \n");
@@ -944,10 +970,10 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
 
 
   const size_t N = positions.size;
-  float one_dimension_range = right_boundary - left_boundary;
-  float max_window_area  = square(one_dimension_range);
-  float max_circles_area = positions.size * PI * square(radius);
-  float experimental_packing_factor = max_circles_area / max_window_area;
+  const float one_dimension_range = right_boundary - left_boundary;
+  const float max_window_area  = square(one_dimension_range);
+  const float max_circles_area = positions.size * PI * square(radius);
+  const float experimental_packing_factor = max_circles_area / max_window_area;
 
   printf("[..]\n");
   printf("[..] Radius of a circle   := %g\n", radius);
@@ -959,17 +985,17 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
   assert(max_circles_area < max_window_area);
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
   assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-  //assert(fabs(experimental_packing_factor - packing_factor) < 1e-2);
+  //assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
 
 
+  memory = (uint8*)positions.data + N * sizeof(*positions.data);
 
   Grid2D grid; 
   grid.cell_size                     = sqrt(2)*radius;
   grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
   grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
-  grid.data                          = (Grid_Cell*) malloc(sizeof(*grid.data) * grid.number_of_cells);
+  grid.data                          = (Grid_Cell*) memory;
 
-  defer { free(grid.data); };
   memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
 
   printf("[..]\n");
@@ -986,7 +1012,6 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
     create_square_grid(&grid, &positions);
   }
 
-#if 1
   {
     printf("[..]\n");
     printf("[..] Starting random walk ... \n");
@@ -996,18 +1021,15 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
   }
   //assert(check_circles_are_inside_a_box(&positions, radius));
   //assert(check_circles_do_not_intersect_each_other(&positions, radius));
-#endif
 
-
-  const size_t a_lot = 1e10; // ~ 10 gigabytes.
+  memory = (uint8*)grid.data + grid.number_of_cells * sizeof(*grid.data);
 
   Graph graph;
   graph.count = N;
-  graph.connected_nodes_count = (uint8*) malloc(a_lot);
+  graph.connected_nodes_count = (uint8*) memory;
   graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
   graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
 
-  defer { free(graph.connected_nodes_count); };
   memset(graph.connected_nodes_count, 0, sizeof(*graph.connected_nodes_count) * N);
 
   {
@@ -1021,6 +1043,7 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
   }
 
 
+  // @Incomplete: maybe we also want to use memory arena for cluster_sizes, hash_table and queue.
 
   dynamic_array<uint> cluster_sizes;
   defer { array_free(&cluster_sizes); };
@@ -1066,6 +1089,10 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
 
   *largest_cluster_size = max_size;
 
+  global_positions = positions;
+  global_grid      = grid;
+  global_graph     = graph;
+
   {
     printf("[..]\n");
     printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
@@ -1082,136 +1109,12 @@ void do_the_thing(float radius, float L, float packing_factor, size_t* largest_c
   }
 }
 
-#if 0
-int main(int argc, char** argv) {
-  while (!glfwWindowShouldClose(window)) {
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    bind_vertex_array(0);
-    bind_vertex_buffer(0);;
-    bind_index_buffer(0);
-    glUseProgram(0);
-
-
-    Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-    data->color[0] = r;
-    data->color[1] = 0.3f;
-    data->color[2] = 1.0f;
-    data->color[3] = 0.87f;
-    data->mvp      = glm::mat4(1);
-
-#if 0
-    bind_shader(basic_shader);
-    draw_call(GL_LINES, vert_array2);
-#endif
-
-#if 1
-    for (size_t i = 0; i < grid.number_of_cells_per_dimension; i++) {
-      for (size_t j = 0; j < grid.number_of_cells_per_dimension; j++) {
-        float x = (i + 1/2.0f) * grid.cell_size - 1.0f;
-        float y = (j + 1/2.0f) * grid.cell_size - 1.0f;
-
-        glm::mat4 model = glm::mat4(1);
-        model = glm::translate(model, glm::vec3(x, y, 0));
-        model = glm::scale(model, glm::vec3(grid.cell_size, grid.cell_size, 0));
-
-        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-        data->color[0] = 1.0f;
-        data->color[1] = 0.0f;
-        data->color[2] = 0.0f;
-        data->color[3] = 0.87f;
-        data->mvp = model;
-
-        bind_shader(basic_shader);
-        draw_call(GL_LINES, vert_array3);
-      }
-    }
-#endif
-
-#if 1
-    // 
-    // @Incomplete: batch rendering...
-    // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
-    // 
-    for (size_t i = 0; i < positions.size; i++) {
-      float x = positions[i].x;
-      float y = positions[i].y;
-
-      {
-        glm::mat4 model = glm::mat4(1);
-        model = glm::translate(model, glm::vec3(x, y, 0));
-        model = glm::scale(model, glm::vec3(radius, radius, 0));
-
-        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-        data->mvp = model;
-        data->color[0] = r;
-        data->color[1] = 0.3f;
-        data->color[2] = 1.0f;
-
-        bind_shader(basic_shader);
-        draw_call(GL_LINES, vert_array1);
-      }
-
-#if 0
-      {
-        glm::mat4 model = glm::mat4(1);
-        model = glm::translate(model, glm::vec3(x, y, 0));
-        model = glm::scale(model, glm::vec3(radius+L, radius+L, 0));
-
-        Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-        data->mvp = model;
-        data->color[0] = 0.0f;
-        data->color[1] = 1.0f;
-        data->color[2] = 0.00f;
-
-        bind_shader(basic_shader);
-        draw_call(GL_LINES, vert_array1);
-      }
-#endif
-    }
-#endif
-
-
-    if (r > 1.0f) {
-      increment = -0.05f;
-    } else if (r < 0.0f) {
-      increment = 0.05f;
-    }
-
-    r += increment;
-
-
-    glfwSwapBuffers(window);
-    glfwPollEvents();
-  }
-
-  glfwTerminate();
-  return 0;
-}
-#endif
-
-struct Thread_Data {
-  float particle_radius;
-  float jumping_conductivity_distance;
-  float packing_factor;
-};
-
-static Vertex_Array circles = {};
-static Vertex_Array lines   = {};
-static Vertex_Array quads   = {};
-static Shader            basic_shader = {};
-static Basic_Shader_Data basic_shader_data = {};
-
-static Thread computation_thread = {};
-static Thread_Data thread_data   = {};
-
-static int64 result_largest_cluster_size = 0;
-
 static int computation_thread_proc(void* param) {
   Thread_Data data = *(Thread_Data*) param;
 
   size_t largest_cluster_size;
-  do_the_thing(data.particle_radius,
+  do_the_thing(data.memory,
+               data.particle_radius,
                data.jumping_conductivity_distance,
                data.packing_factor,
                &largest_cluster_size);
@@ -1235,6 +1138,7 @@ void init_program() {
     {
       // Initialize default input;
       Thread_Data* data = &thread_data;
+      data->memory = malloc(MEMORY_ALLOCATION_SIZE);
       data->particle_radius               = 0.1;
       data->jumping_conductivity_distance = 1.5 * data->particle_radius;
       data->packing_factor                = 0.7;
@@ -1344,14 +1248,22 @@ void init_program() {
     }
 
     {
-      ImGui::StyleColorsLight();
+      ImGui::StyleColorsDark();
     }
+}
+
+void deinit_program() {
+  free(thread_data.memory);
 }
 
 void update_and_render(GLFWwindow* window) {
   static bool show_demo_window  = false;
-  static bool show_visual_ui    = true;
   static bool thread_is_paused  = false;
+  static bool show_visual_ui    = true;
+  static bool show_visual_grid  = true;
+  static bool show_visual_spheres = true;
+  static bool show_visual_spheres_radius = true;
+  static bool show_visual_spheres_conductivity = true;
 
   static ImVec2 visual_ui_min = {};
   static ImVec2 visual_ui_max = {};
@@ -1397,6 +1309,10 @@ void update_and_render(GLFWwindow* window) {
     ImGui::Begin("Control Window");
     ImGui::Checkbox("Demo Window", &show_demo_window);
     ImGui::Checkbox("Visual UI", &show_visual_ui);
+    ImGui::Checkbox("Visual Grid",    &show_visual_grid);
+    ImGui::Checkbox("Visual Spheres", &show_visual_spheres);
+    ImGui::Checkbox("Visual Spheres Radius",       &show_visual_spheres_radius);
+    ImGui::Checkbox("Visual Spheres Conductivity", &show_visual_spheres_conductivity);
 
     ImGui::InputFloat("Particle radius",               &particle_radius,               step, step_fast, format, flags);
     ImGui::InputFloat("Jumping conductivity distance", &jumping_conductivity_distance, step, step_fast, format, flags);
@@ -1469,6 +1385,7 @@ void update_and_render(GLFWwindow* window) {
     const float x =  normalized_min_x + w;
     const float y = -normalized_min_y - h;
 
+#if 1
     glm::mat4 model = glm::mat4(1);
     model = glm::translate(model, glm::vec3(x, y, 0));
     model = glm::scale(model, glm::vec3(w, h, 0));
@@ -1478,5 +1395,65 @@ void update_and_render(GLFWwindow* window) {
 
     bind_shader(basic_shader);
     draw_call(GL_LINES, lines);
+#endif
+
+    if (show_visual_grid) {
+      for (size_t i = 0; i < global_grid.number_of_cells_per_dimension; i++) {
+        for (size_t j = 0; j < global_grid.number_of_cells_per_dimension; j++) {
+          float cell_size = global_grid.cell_size;
+          float x = (i + 1/2.0f) * cell_size - 1.0f;
+          float y = (j + 1/2.0f) * cell_size - 1.0f;
+
+          glm::mat4 model = glm::mat4(1);
+          model = glm::translate(model, glm::vec3(x, y, 0));
+          model = glm::scale(model, glm::vec3(cell_size, cell_size, 0));
+
+          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+          data->mvp = model;
+
+          bind_shader(basic_shader);
+          draw_call(GL_LINES, quads);
+        }
+      }
+    }
+
+    if (show_visual_spheres) {
+      // 
+      // @Incomplete: batch rendering...
+      // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
+      // 
+      for (size_t i = 0; i < global_positions.size; i++) {
+        const float x = global_positions[i].x;
+        const float y = global_positions[i].y;
+
+        const float radius = thread_data.particle_radius;
+        const float L      = thread_data.jumping_conductivity_distance;
+
+
+        if (show_visual_spheres_radius) {
+          glm::mat4 model = glm::mat4(1);
+          model = glm::translate(model, glm::vec3(x, y, 0));
+          model = glm::scale(model, glm::vec3(radius, radius, 0));
+
+          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+          data->mvp = model;
+
+          bind_shader(basic_shader);
+          draw_call(GL_LINES, circles);
+        }
+
+        if (show_visual_spheres_conductivity) {
+          glm::mat4 model = glm::mat4(1);
+          model = glm::translate(model, glm::vec3(x, y, 0));
+          model = glm::scale(model, glm::vec3(radius+L, radius+L, 0));
+
+          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
+          data->mvp = model;
+
+          bind_shader(basic_shader);
+          draw_call(GL_LINES, circles);
+        }
+      }
+    }
   }
 }
