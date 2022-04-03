@@ -1360,23 +1360,30 @@ void update_and_render() {
   }
 
   {
-    ImGui::Begin("Control Window");
-    ImGui::Checkbox("Demo Window", &show_demo_window);
-
-
     static const float step      = 0.0f;
     static const float step_fast = 0.0f;
     static const char* format    = "%.4f";
     static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
-    ImGui::InputFloat("Particle radius",               &thread_data.particle_radius,               step, step_fast, format, flags);
-    ImGui::InputFloat("Jumping conductivity distance", &thread_data.jumping_conductivity_distance, step, step_fast, format, flags);
-    ImGui::InputFloat("Packing factor",                &thread_data.packing_factor,                step, step_fast, format, flags);
+    float particle_radius               = thread_data.particle_radius;
+    float jumping_conductivity_distance = thread_data.jumping_conductivity_distance;
+    float packing_factor                = thread_data.packing_factor;
 
-    ImGui::Text("Particle radius               := %.3f", thread_data.particle_radius);
-    ImGui::Text("Jumping conductivity distance := %.3f", thread_data.jumping_conductivity_distance);
-    ImGui::Text("Packing factor                := %.3f", thread_data.packing_factor);
+    ImGui::Begin("Control Window");
+    ImGui::Checkbox("Demo Window", &show_demo_window);
+
+    ImGui::InputFloat("Particle radius",               &particle_radius,               step, step_fast, format, flags);
+    ImGui::InputFloat("Jumping conductivity distance", &jumping_conductivity_distance, step, step_fast, format, flags);
+    ImGui::InputFloat("Packing factor",                &packing_factor,                step, step_fast, format, flags);
+
+    ImGui::Text("Particle radius               := %.3f", particle_radius);
+    ImGui::Text("Jumping conductivity distance := %.3f", jumping_conductivity_distance);
+    ImGui::Text("Packing factor                := %.3f", packing_factor);
     ImGui::Text("Largest cluster size          := %lu",  result_largest_cluster_size);
+
+    InterlockedExchange((uint*) &thread_data.particle_radius,               *(uint*) &particle_radius);
+    InterlockedExchange((uint*) &thread_data.jumping_conductivity_distance, *(uint*) &jumping_conductivity_distance);
+    InterlockedExchange((uint*) &thread_data.packing_factor,                *(uint*) &packing_factor);
 
 
     if (ImGui::Button("Start")) {
