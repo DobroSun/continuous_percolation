@@ -295,7 +295,8 @@ struct Thread_Data {
 static Vertex_Array circle = {};
 static Vertex_Array line   = {};
 static Vertex_Array quad   = {};
-static Vertex_Array batched_quads = {};
+static Vertex_Array batched_quads   = {};
+static Vertex_Array batched_circles = {};
 static Shader            basic_shader = {};
 static Basic_Shader_Data basic_shader_data = {};
 
@@ -944,10 +945,10 @@ void add_vertex_attribute(Vertex_Attribute va) {
                         (const void*) va.size_to_an_attribute_from_beginning_of_a_vertex_in_bytes);
 }
 
-template<class T> GLenum get_index_type()   { return 0; }
-template<> GLenum get_index_type<uint8 >()  { return GL_UNSIGNED_BYTE;  }
-template<> GLenum get_index_type<uint16>()  { return GL_UNSIGNED_SHORT; }
-template<> GLenum get_index_type<uint32>()  { return GL_UNSIGNED_INT;   }
+template<class T> GLenum get_index_type()  { return 0; }
+template<> GLenum get_index_type<uint8 >() { return GL_UNSIGNED_BYTE;  }
+template<> GLenum get_index_type<uint16>() { return GL_UNSIGNED_SHORT; }
+template<> GLenum get_index_type<uint32>() { return GL_UNSIGNED_INT;   }
 
 
 
@@ -1258,45 +1259,91 @@ void init_program(int width, int height) {
     const uint NUM_VERTICES = 40;
 
     dynamic_array<float>  vertex;
-    dynamic_array<uint16> index;
+    dynamic_array<uint32> index;
     array_resize(&vertex, NUM_VERTICES * 2);
     array_resize(&index, NUM_VERTICES * 2);
 
-    defer{ array_free(&vertex); };
-    defer{ array_free(&index); };
+    defer { array_free(&vertex); };
+    defer { array_free(&index); };
 
     {
-        float  a = 0;
-        float da = TAU / (double)(NUM_VERTICES - 2);
-        for (size_t i = 0; i < vertex.size; i += 2) {
-            vertex[i + 0] = cos(a);
-            vertex[i + 1] = sin(a);
-            a += da;
-        }
+      float  a = 0;
+      float da = TAU / (double)(NUM_VERTICES - 2);
+      for (size_t i = 0; i < vertex.size; i += 2) {
+        vertex[i + 0] = cos(a);
+        vertex[i + 1] = sin(a);
+        a += da;
+      }
 
-        size_t j = 0;
-        for (size_t i = 0; i < index.size / 2; i++) {
-            index[j] = j;
-            j++;
-        }
+      for (size_t i = 0; i < index.size; i++) {
+        index[i] = i;
+      }
     }
 
-    Create_Vertex_Buffer vbo;
-    Create_Index_Buffer<uint16> ibo;
+    { 
+      Create_Vertex_Buffer vbo;
+      Create_Index_Buffer<uint32> ibo;
 
-    vbo.data = vertex.data;
-    vbo.size = vertex.size;
+      vbo.data = vertex.data;
+      vbo.size = vertex.size;
 
-    ibo.data = index.data;
-    ibo.size = index.size;
+      ibo.data = index.data;
+      ibo.size = index.size;
 
-    circle = create_vertex_array(vbo, ibo);
+      circle = create_vertex_array(vbo, ibo);
 
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
-    add_vertex_attribute(va);
+      Vertex_Attribute va;
+      va.attribute_index = 0;
+      va.number_of_values_in_an_attribute = 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      add_vertex_attribute(va);
+    }
+
+    dynamic_array<float>  positions;
+    dynamic_array<uint32> indices;
+
+    defer { array_free(&positions); };
+    defer { array_free(&indices); };
+
+    float norm_size = thread_data.particle_radius;
+    for (size_t i = 0; i < global_positions.size; i++) {
+      Vec2 world = global_positions[i];
+      // these are world coordinates, but they are already normalized.
+
+      for (size_t k = 0; k < vertex.size; k += 2) {
+        Vec2 local = { vertex[k], vertex[k+1] }; // these are local coordinates.
+
+        local = norm_size * local; // scale
+        Vec2 pos = world + local;
+
+        array_add(&positions, pos.x);
+        array_add(&positions, pos.y);
+      }
+
+      size_t idx = i * index.size;
+      for (size_t k = 0; k < index.size; k++) {
+        array_add(&indices, idx + index[k]);
+      }
+    }
+
+    { 
+      Create_Vertex_Buffer vbo;
+      Create_Index_Buffer<uint32> ibo;
+
+      vbo.data = positions.data;
+      vbo.size = positions.size;
+
+      ibo.data = indices.data;
+      ibo.size = indices.size;
+
+      batched_circles = create_vertex_array(vbo, ibo);
+
+      Vertex_Attribute va;
+      va.attribute_index = 0;
+      va.number_of_values_in_an_attribute = 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      add_vertex_attribute(va);
+    }
   }
   {
     const float lines[] = {
@@ -1387,7 +1434,7 @@ void init_program(int width, int height) {
         for (size_t k = 0; k < array_size(quads); k += 2) {
           Vec2 local = { quads[k], quads[k+1] }; // this is my local coordinates.
 
-          local = norm_size * (local + Vec2{ norm_offset, norm_offset });
+          local = norm_size * (local + Vec2{ norm_offset, norm_offset }); // translate & scale.
           Vec2 pos = center + local;
 
           array_add(&vertex, pos.x);
@@ -1571,6 +1618,12 @@ void update_and_render(GLFWwindow* window) {
     }
 
     if (show_visual_spheres) {
+      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+      data->mvp = (float*) &projection;
+
+      bind_shader(basic_shader);
+      draw_call(GL_LINES, batched_circles);
+#if 0
       // 
       // @Incomplete: batch rendering...
       // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
@@ -1607,6 +1660,7 @@ void update_and_render(GLFWwindow* window) {
           draw_call(GL_LINES, circle);
         }
       }
+#endif
     }
   }
 }
