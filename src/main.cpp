@@ -1481,14 +1481,11 @@ void update_and_render(GLFWwindow* window) {
   static bool show_visual_line  = true;
   static bool show_visual_grid  = true;
   static bool show_visual_spheres = true;
-  static bool show_visual_spheres_radius = true;
-  static bool show_visual_spheres_conductivity = true;
 
-  static Vec4 visual_ui_min = {};
-  static Vec4 visual_ui_max = {};
-
+  Vec4 visual_ui_min = {};
+  Vec4 visual_ui_max = {};
   int width, height;
-  glfwGetFramebufferSize(window, &width, &height);
+
 
   ImGuiIO& io = ImGui::GetIO();
 
@@ -1583,6 +1580,7 @@ void update_and_render(GLFWwindow* window) {
 
   // Render
   ImGui::Render();
+  glfwGetFramebufferSize(window, &width, &height);
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -1601,66 +1599,20 @@ void update_and_render(GLFWwindow* window) {
 
     Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
 
-    if (show_visual_line) {
-      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-      data->mvp = (float*) &projection;
+    Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+    data->mvp = (float*) &projection;
+    bind_shader(basic_shader);
 
-      bind_shader(basic_shader);
+    if (show_visual_line) {
       draw_call(GL_LINES, line);
     }
 
     if (show_visual_grid) {
-      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-      data->mvp = (float*) &projection;
-
-      bind_shader(basic_shader);
       draw_call(GL_LINES, batched_quads);
     }
 
     if (show_visual_spheres) {
-      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-      data->mvp = (float*) &projection;
-
-      bind_shader(basic_shader);
       draw_call(GL_LINES, batched_circles);
-#if 0
-      // 
-      // @Incomplete: batch rendering...
-      // @Incomplete: @CleanUp: we can draw circles better, just draw a quad and in the fragment shader fill up fragments that are sqrt(x*x + y*y) < radius.
-      // 
-      for (size_t i = 0; i < global_positions.size; i++) {
-        const float x = global_positions[i].x;
-        const float y = global_positions[i].y;
-
-        const float radius = thread_data.particle_radius;
-        const float L      = thread_data.jumping_conductivity_distance;
-
-
-        if (show_visual_spheres_radius) {
-          glm::mat4 model = glm::mat4(1);
-          model = glm::translate(model, glm::vec3(x, y, 0));
-          model = glm::scale(model, glm::vec3(radius, radius, 0));
-
-          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = (float*) &model;
-
-          bind_shader(basic_shader);
-          draw_call(GL_LINES, circle);
-        }
-
-        if (show_visual_spheres_conductivity) {
-          glm::mat4 model = glm::mat4(1);
-          model = glm::translate(model, glm::vec3(x, y, 0));
-          model = glm::scale(model, glm::vec3(radius+L, radius+L, 0));
-
-          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = (float*) &model;
-
-          bind_shader(basic_shader);
-          draw_call(GL_LINES, circle);
-        }
-      }
-#endif
     }
   }
 }
