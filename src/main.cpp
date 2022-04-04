@@ -1552,9 +1552,9 @@ void update_and_render(GLFWwindow* window) {
     visual_ui_min = t * visual_ui_min;
     visual_ui_max = t * visual_ui_max;
 
-    if (show_visual_line) {
-      Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
+    Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
 
+    if (show_visual_line) {
       Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
       data->mvp = (float*) &projection;
 
@@ -1563,37 +1563,11 @@ void update_and_render(GLFWwindow* window) {
     }
 
     if (show_visual_grid) {
-      Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
-
       Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
       data->mvp = (float*) &projection;
 
       bind_shader(basic_shader);
       draw_call(GL_LINES, batched_quads);
-
-#if 0 
-      for (size_t i = 0; i < global_grid.number_of_cells_per_dimension; i++) {
-        for (size_t j = 0; j < global_grid.number_of_cells_per_dimension; j++) {
-          float cell_size = global_grid.cell_size;
-          Vec2 p = { (i+1/2.0f) * cell_size, (j+1/2.0f) * cell_size, 0.0f, 1.0f }; // center quads.
-
-          float cap = global_grid.number_of_cells_per_dimension * cell_size;
-
-          Vec4 from_min = { 0.0f, 0.0f, 0.0f, 1.0f };
-          Vec4 from_max = { cap, cap, 0.0f, 1.0f };
-
-          Matrix4x4 model      = translation_matrix(p);
-          Matrix4x4 projection = box_to_box_matrix(from_min, from_max, visual_ui_min, visual_ui_max);
-          Matrix4x4 transform  = projection * model;
-
-          Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
-          data->mvp = (float*) &transform;
-
-          bind_shader(basic_shader);
-          draw_call(GL_LINES, quads);
-        }
-      }
-#endif
     }
 
     if (show_visual_spheres) {
