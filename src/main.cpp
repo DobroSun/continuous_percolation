@@ -128,12 +128,30 @@ Matrix4x4 box_to_box_matrix(Vec4 from_min, Vec4 from_max, Vec4 to_min, Vec4 to_m
   return m;
 }
 
-Matrix4x4 translation_matrix(Vec2 vec) {
+Matrix4x4 identity_matrix() {
+  Matrix4x4 m;
+  m.m11 = 1; m.m12 = 0; m.m13 = 0; m.m14 = 0;
+  m.m21 = 0; m.m22 = 1; m.m23 = 0; m.m24 = 0;
+  m.m31 = 0; m.m32 = 0; m.m33 = 1; m.m34 = 0;
+  m.m41 = 0; m.m42 = 0; m.m43 = 0; m.m44 = 1;
+  return m;
+}
+
+Matrix4x4 scale_matrix(Vec4 vec) {
+  Matrix4x4 m;
+  m.m11 = vec.x; m.m12 = 0;     m.m13 = 0;     m.m14 = 0;
+  m.m21 = 0;     m.m22 = vec.y; m.m23 = 0;     m.m24 = 0;
+  m.m31 = 0;     m.m32 = 0;     m.m33 = vec.z; m.m34 = 0;
+  m.m41 = 0;     m.m42 = 0;     m.m43 = 0;     m.m44 = vec.w;
+  return m;
+}
+
+Matrix4x4 translation_matrix(Vec4 vec) {
   Matrix4x4 m;
   m.m11 = 1; m.m12 = 0; m.m13 = 0; m.m14 = vec.x;
   m.m21 = 0; m.m22 = 1; m.m23 = 0; m.m24 = vec.y;
-  m.m31 = 0; m.m32 = 0; m.m33 = 1; m.m34 = 0;
-  m.m41 = 0; m.m42 = 0; m.m43 = 0; m.m44 = 1;
+  m.m31 = 0; m.m32 = 0; m.m33 = 1; m.m34 = vec.z;
+  m.m41 = 0; m.m42 = 0; m.m43 = 0; m.m44 = vec.w;
   return m;
 }
 
@@ -164,8 +182,10 @@ Matrix4x4 operator*(Matrix4x4 m, Matrix4x4 n) {
 
 
 Vec2 operator+(Vec2 a, Vec2 b)  { return { a.x + b.x, a.y + b.y }; }
-Vec2 operator*(float c, Vec2 a) { return { c * a.x, c * a.y }; }
-Vec2 operator*(Vec2 a, float c) { return c * a; }
+Vec2 operator-(Vec2 a, Vec2 b)  { return { a.x - b.x, a.y - b.y }; }
+Vec2 operator*(Vec2 a, float c) { return { c * a.x, c * a.y }; }
+Vec2 operator/(Vec2 a, float c) { return { a.x / c, a.y / c }; }
+Vec2 operator*(float c, Vec2 a) { return a * c; }
 
 struct Grid_Position {
   uint i, j;
@@ -272,9 +292,10 @@ struct Thread_Data {
   float packing_factor;
 };
 
-static Vertex_Array circles = {};
-static Vertex_Array lines   = {};
-static Vertex_Array quads   = {};
+static Vertex_Array circle = {};
+static Vertex_Array line   = {};
+static Vertex_Array quad   = {};
+static Vertex_Array batched_quads = {};
 static Shader            basic_shader = {};
 static Basic_Shader_Data basic_shader_data = {};
 
@@ -1195,133 +1216,211 @@ static int computation_thread_proc(void* param) {
   return 0;
 }
 
-void init_program() {
-    init_filesystem_api();
-    init_threads_api();
+void init_program(int width, int height) {
+  init_filesystem_api();
+  init_threads_api();
 
-    check_filesystem_api();
-    check_threads_api();
+  check_filesystem_api();
+  check_threads_api();
+
+  {
+    uint seed = time(NULL);
+    srand(seed);
+  }
+
+  {
+    // Initialize default input;
+    Thread_Data* data = &thread_data;
+    data->memory = malloc(MEMORY_ALLOCATION_SIZE);
+    data->particle_radius               = 0.1;
+    data->jumping_conductivity_distance = 1.5 * data->particle_radius;
+    data->packing_factor                = 0.7;
+
+    // @RemoveMe: 
+    size_t largest_cluster_size;
+    do_the_thing(data->memory,
+                 data->particle_radius,
+                 data->jumping_conductivity_distance,
+                 data->packing_factor,
+                 &largest_cluster_size);
+  }
+
+  {
+    Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
+    basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
+    basic_shader.setup_uniform = basic_shader_uniform;
+    basic_shader.data = &basic_shader_data;
+
+    basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
+    assert(basic_shader_data.uniform_mvp != -1);
+  }
+  {
+    const uint NUM_VERTICES = 40;
+
+    dynamic_array<float>  vertex;
+    dynamic_array<uint16> index;
+    array_resize(&vertex, NUM_VERTICES * 2);
+    array_resize(&index, NUM_VERTICES * 2);
+
+    defer{ array_free(&vertex); };
+    defer{ array_free(&index); };
 
     {
-      uint seed = time(NULL);
-      srand(seed);
-    }
-
-    {
-      // Initialize default input;
-      Thread_Data* data = &thread_data;
-      data->memory = malloc(MEMORY_ALLOCATION_SIZE);
-      data->particle_radius               = 0.1;
-      data->jumping_conductivity_distance = 1.5 * data->particle_radius;
-      data->packing_factor                = 0.7;
-    }
-
-    {
-        Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
-        basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
-        basic_shader.setup_uniform = basic_shader_uniform;
-        basic_shader.data = &basic_shader_data;
-
-        basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
-        assert(basic_shader_data.uniform_mvp != -1);
-    }
-    {
-        const uint NUM_VERTICES = 40;
-
-        dynamic_array<float>  vertex;
-        dynamic_array<uint16> index;
-        array_resize(&vertex, NUM_VERTICES * 2);
-        array_resize(&index, NUM_VERTICES * 2);
-
-        defer{ array_free(&vertex); };
-        defer{ array_free(&index); };
-
-        {
-            float  a = 0;
-            float da = TAU / (double)(NUM_VERTICES - 2);
-            for (size_t i = 0; i < vertex.size; i += 2) {
-                vertex[i + 0] = cos(a);
-                vertex[i + 1] = sin(a);
-                a += da;
-            }
-
-            size_t j = 0;
-            for (size_t i = 0; i < index.size / 2; i++) {
-                index[j] = j;
-                j++;
-            }
+        float  a = 0;
+        float da = TAU / (double)(NUM_VERTICES - 2);
+        for (size_t i = 0; i < vertex.size; i += 2) {
+            vertex[i + 0] = cos(a);
+            vertex[i + 1] = sin(a);
+            a += da;
         }
 
-        Create_Vertex_Buffer vbo;
-        Create_Index_Buffer<uint16> ibo;
-
-        vbo.data = vertex.data;
-        vbo.size = vertex.size;
-
-        ibo.data = index.data;
-        ibo.size = index.size;
-
-        circles = create_vertex_array(vbo, ibo);
-
-        Vertex_Attribute va;
-        va.attribute_index = 0;
-        va.number_of_values_in_an_attribute = 2;
-        va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
-        add_vertex_attribute(va);
+        size_t j = 0;
+        for (size_t i = 0; i < index.size / 2; i++) {
+            index[j] = j;
+            j++;
+        }
     }
-    {
-        const float linesp[] = {
-          -1.0f, -1.0f,
-           1.0f,  1.0f,
-        };
 
-        Create_Vertex_Buffer buffer;
-        buffer.data = linesp;
-        buffer.size = array_size(linesp);
+    Create_Vertex_Buffer vbo;
+    Create_Index_Buffer<uint16> ibo;
 
-        lines = create_vertex_array(buffer);
+    vbo.data = vertex.data;
+    vbo.size = vertex.size;
 
-        Vertex_Attribute va;
-        va.attribute_index = 0;
-        va.number_of_values_in_an_attribute = 2;
-        va.size_of_one_vertex_in_bytes = sizeof(*buffer.data) * 2;
-        add_vertex_attribute(va);
-    }
-    {
-        const float quad[] = {
-          -0.5f, -0.5f,
-          -0.5f,  0.5f,
-           0.5f, -0.5f,
-           0.5f,  0.5f,
-        };
+    ibo.data = index.data;
+    ibo.size = index.size;
 
-        const uint8 indices[] = {
-          0, 1,
-          0, 2,
-          1, 3,
-          2, 3,
-        };
+    circle = create_vertex_array(vbo, ibo);
 
-        Create_Vertex_Buffer vertex;
-        vertex.data = quad;
-        vertex.size = array_size(quad);
+    Vertex_Attribute va;
+    va.attribute_index = 0;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+    add_vertex_attribute(va);
+  }
+  {
+    const float lines[] = {
+      -1.0f, -1.0f,
+       1.0f,  1.0f,
+    };
 
-        Create_Index_Buffer<uint8> index;
-        index.data = indices;
-        index.size = array_size(indices);
+    Create_Vertex_Buffer buffer;
+    buffer.data = lines;
+    buffer.size = array_size(lines);
 
-        quads = create_vertex_array(vertex, index);
+    line = create_vertex_array(buffer);
 
-        Vertex_Attribute va;
-        va.attribute_index = 0;
-        va.number_of_values_in_an_attribute = 2;
-        va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
-        add_vertex_attribute(va);
-    }
+    Vertex_Attribute va;
+    va.attribute_index = 0;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes = sizeof(*buffer.data) * 2;
+    add_vertex_attribute(va);
+  }
+  {
+    const float quads[] = {
+      -0.5f, -0.5f,
+      -0.5f,  0.5f,
+       0.5f, -0.5f,
+       0.5f,  0.5f,
+    };
+
+    const uint8 indices[] = {
+      0, 1,
+      0, 2,
+      1, 3,
+      2, 3,
+    };
 
     {
-      ImGui::StyleColorsDark();
+      Create_Vertex_Buffer vertex;
+      vertex.data = quads;
+      vertex.size = array_size(quads);
+
+      Create_Index_Buffer<uint8> index;
+      index.data = indices;
+      index.size = array_size(indices);
+
+      quad = create_vertex_array(vertex, index);
+
+      Vertex_Attribute va;
+      va.attribute_index = 0;
+      va.number_of_values_in_an_attribute = 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      add_vertex_attribute(va);
     }
+
+    dynamic_array<float>  vertex;
+    dynamic_array<uint32> index;
+
+    defer { array_free(&vertex); };
+    defer { array_free(&index); };
+
+    size_t  n_cells = global_grid.number_of_cells_per_dimension;
+    float cell_size = global_grid.cell_size;
+    float cap       = n_cells * cell_size;
+    float norm_size = 2.0f / (float)n_cells;
+    float norm_offset = 0.5f;
+
+    array_reserve(&vertex,  n_cells * n_cells * array_size(quads));
+    array_reserve(&index, vertex.capacity);
+
+
+    for (size_t i = 0; i < n_cells; i++) {
+      for (size_t j = 0; j < n_cells; j++) {
+        Vec2 center = { (float)(i), (float)(j) }; // this is my world coordinates!
+
+        // 
+        // I want to combine world & local coordinates.
+        // how do I do that? 
+        // world coordinates ARE NOT in normalized space.
+        // local coordinates ARE in normalized space.
+        //
+        // first, we need to convert world cordinates to normalized space.
+        // second, we need to translate and scale local quad.
+        // then we can sum them up: center + local.
+        //
+
+        center = norm_size * center  - Vec2{ 1.0f, 1.0f }; // now they are also in normalized space.
+
+        size_t idx = vertex.size / 2;
+
+        for (size_t k = 0; k < array_size(quads); k += 2) {
+          Vec2 local = { quads[k], quads[k+1] }; // this is my local coordinates.
+
+          local = norm_size * (local + Vec2{ norm_offset, norm_offset });
+          Vec2 pos = center + local;
+
+          array_add(&vertex, pos.x);
+          array_add(&vertex, pos.y);
+
+          array_add(&index, idx + indices[k]);
+          array_add(&index, idx + indices[k+1]);
+        }
+      }
+    }
+
+    {
+      Create_Vertex_Buffer vbo;
+      vbo.data = vertex.data;
+      vbo.size = vertex.size;
+
+      Create_Index_Buffer<uint32> ibo;
+      ibo.data = index.data;
+      ibo.size = index.size;
+
+      batched_quads = create_vertex_array(vbo, ibo);
+
+      Vertex_Attribute va;
+      va.attribute_index = 0;
+      va.number_of_values_in_an_attribute = 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      add_vertex_attribute(va);
+    }
+  }
+
+  {
+    ImGui::StyleColorsDark();
+  }
 }
 
 void deinit_program() {
@@ -1332,6 +1431,7 @@ void update_and_render(GLFWwindow* window) {
   static bool show_demo_window  = false;
   static bool thread_is_paused  = false;
   static bool show_visual_ui    = true;
+  static bool show_visual_line  = true;
   static bool show_visual_grid  = true;
   static bool show_visual_spheres = true;
   static bool show_visual_spheres_radius = true;
@@ -1384,6 +1484,7 @@ void update_and_render(GLFWwindow* window) {
     ImGui::Begin("Control Window");
     ImGui::Checkbox("Demo Window", &show_demo_window);
     ImGui::Checkbox("Visual UI", &show_visual_ui);
+    ImGui::Checkbox("Visual Line",    &show_visual_line);
     ImGui::Checkbox("Visual Grid",    &show_visual_grid);
     ImGui::Checkbox("Visual Spheres", &show_visual_spheres);
     ImGui::Checkbox("Visual Spheres Radius",       &show_visual_spheres_radius);
@@ -1429,7 +1530,6 @@ void update_and_render(GLFWwindow* window) {
 
     auto framerate = io.Framerate;
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
-    // ImGui::Text("min  := (%.3f, %.3f); max  := (%.3f, %.3f)", visual_ui_min.x, visual_ui_min.y, visual_ui_max.x, visual_ui_max.y);
 
     ImGui::End();
   }
@@ -1452,25 +1552,32 @@ void update_and_render(GLFWwindow* window) {
     visual_ui_min = t * visual_ui_min;
     visual_ui_max = t * visual_ui_max;
 
-#if 1
-    Matrix4x4 norm = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
+    if (show_visual_line) {
+      Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
 
-    Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-    data->mvp = (float*) &norm;
+      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+      data->mvp = (float*) &projection;
 
-    bind_shader(basic_shader);
-    draw_call(GL_LINES, lines);
-#endif
+      bind_shader(basic_shader);
+      draw_call(GL_LINES, line);
+    }
 
     if (show_visual_grid) {
+      Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
+
+      Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+      data->mvp = (float*) &projection;
+
+      bind_shader(basic_shader);
+      draw_call(GL_LINES, batched_quads);
+
+#if 0 
       for (size_t i = 0; i < global_grid.number_of_cells_per_dimension; i++) {
         for (size_t j = 0; j < global_grid.number_of_cells_per_dimension; j++) {
           float cell_size = global_grid.cell_size;
-          Vec2 p = { (i+1/2.0f) * cell_size, (j+1/2.0f) * cell_size }; // center quads.
+          Vec2 p = { (i+1/2.0f) * cell_size, (j+1/2.0f) * cell_size, 0.0f, 1.0f }; // center quads.
 
           float cap = global_grid.number_of_cells_per_dimension * cell_size;
-
-          printf("%d, %d\n", i, j);
 
           Vec4 from_min = { 0.0f, 0.0f, 0.0f, 1.0f };
           Vec4 from_max = { cap, cap, 0.0f, 1.0f };
@@ -1479,23 +1586,6 @@ void update_and_render(GLFWwindow* window) {
           Matrix4x4 projection = box_to_box_matrix(from_min, from_max, visual_ui_min, visual_ui_max);
           Matrix4x4 transform  = projection * model;
 
-          // x and y are normalized, they are from -1.0f to 1.0f.
-          // now we only need to map those from (-1.0f, -1.0f) ; (1.0f, 1.0f) to (visual_ui_min) ; (visual_ui_max)
-#if 0
-          const ImVec2 norm_min = {t.x - t.w*1.25f, t.y - t.h*1.25f};
-          const ImVec2 norm_max = {t.x + t.w- t.w*1.25f, t.y + t.h - t.h*1.25f};
-
-          x = x + norm_min.x - -1.0f;
-          y = y + norm_min.y - -1.0f;
-
-          x = x * (norm_max.x - norm_min.x) / (2.0f);
-          y = y * (norm_max.y - norm_min.y) / (2.0f);
-
-          glm::mat4 model = glm::mat4(1);
-          model = glm::translate(model, glm::vec3(x, y, 0));
-          model = glm::scale(model, glm::vec3(cell_size, cell_size, 0));
-#endif
-
           Basic_Shader_Data* data = (Basic_Shader_Data*) basic_shader.data;
           data->mvp = (float*) &transform;
 
@@ -1503,6 +1593,7 @@ void update_and_render(GLFWwindow* window) {
           draw_call(GL_LINES, quads);
         }
       }
+#endif
     }
 
     if (show_visual_spheres) {
@@ -1527,7 +1618,7 @@ void update_and_render(GLFWwindow* window) {
           data->mvp = (float*) &model;
 
           bind_shader(basic_shader);
-          draw_call(GL_LINES, circles);
+          draw_call(GL_LINES, circle);
         }
 
         if (show_visual_spheres_conductivity) {
@@ -1539,7 +1630,7 @@ void update_and_render(GLFWwindow* window) {
           data->mvp = (float*) &model;
 
           bind_shader(basic_shader);
-          draw_call(GL_LINES, circles);
+          draw_call(GL_LINES, circle);
         }
       }
     }

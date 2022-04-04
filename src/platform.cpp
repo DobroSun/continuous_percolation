@@ -114,7 +114,11 @@ int main(int, char**)
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
     //IM_ASSERT(font != NULL);
 
-    init_program();
+    // @RemoveMe: 
+    int width, height;
+    glfwGetFramebufferSize(window, &width, &height);
+
+    init_program(width, height);
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
