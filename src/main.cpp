@@ -1,5 +1,6 @@
 #define GLEW_STATIC
 
+
 typedef int8_t  int8;
 typedef int16_t int16;
 typedef int32_t int32;
@@ -40,6 +41,7 @@ const float right_boundary =  1.0f;
 const float lower_boundary = -1.0f;
 const float upper_boundary =  1.0f;
 
+
 const float lines_vertices_data[] = {
   -1.0f, -1.0f,
    1.0f,  1.0f,
@@ -63,6 +65,7 @@ const int NUMBER_OF_VERTICES_FOR_A_CIRCLE = 40;
 float   circles_vertices_data[NUMBER_OF_VERTICES_FOR_A_CIRCLE] = {};
 uint32  circles_indices_data [NUMBER_OF_VERTICES_FOR_A_CIRCLE] = {};
 
+// @Incomplete: maybe just make precompiled circles_vertices_data & circles_indices_data?
 void init_circles_vertices_and_indices_data() {
   float * vertex = circles_vertices_data;
   uint32* index  = circles_indices_data;
@@ -75,8 +78,11 @@ void init_circles_vertices_and_indices_data() {
     a += da;
   }
 
-  for (int i = 0; i < array_size(circles_indices_data); i++) {
-    index[i] = i;
+  int j = 0;
+  for (int i = 0; i < array_size(circles_indices_data); i += 2) {
+    index[i+0] = j;
+    index[i+1] = j+1;
+    j++;
   }
 }
 
@@ -285,21 +291,21 @@ struct Vertex_Array {
   uint vbo = 0;
   uint ibo = 0;
 
-  // @Incomplete:
-  // union {
-  //  struct ... 
-        uint vbo_attribute_index_in_enabled_array = 0;
-        uint vbo_number_of_vertices_to_draw       = 0;
-  //  };
-  //  struct ... 
-        GLenum ibo_type_of_indices           = 0;
-        uint   ibo_number_of_indices_to_draw = 0;
-        const void* ibo_indices_array        = NULL;
-  //  };
-  // };
+  union {
+    struct { // vbo != NULL, ibo == NULL;
+      uint   vbo_attribute_index_in_enabled_array;
+      uint   vbo_number_of_vertices_to_draw;
+      GLenum vbo_primitive_to_render;
+    };
+    struct { // vbo != NULL, ibo != NULL;
+      GLenum ibo_type_of_indices;
+      uint   ibo_number_of_elements_to_draw;
+      void*  ibo_indices_array;               // we may want to keep index buffer on a client. if this is NULL draw call is going to use index buffer from GPU
+    };
+  };
 };
 
-// @Incomplete: could actually make this take 8 bytes instead of 16, but whatever.
+// @Incomplete: could actually make this take 8 bytes instead of 16. sizeof(GLenum) == 4, but we only use: GL_FLOAT, GL_DOUBLE, ... so we can make a uint8 variable to keep the type.
 struct Vertex_Attribute {
   uint16 attribute_index = 0;
   uint16 number_of_values_in_an_attribute = 0;                         // should be 1, 2, 3 or 4.
@@ -344,7 +350,7 @@ static dynamic_array<Vec2> global_positions = {};
 static Grid2D              global_grid      = {};
 static Graph               global_graph     = {};
 
-static int64 result_largest_cluster_size = 0;
+static int64  result_largest_cluster_size = 0;
 
 
 
@@ -982,7 +988,7 @@ void add_vertex_attribute(Vertex_Attribute va) {
                         (const void*) va.size_to_an_attribute_from_beginning_of_a_vertex_in_bytes);
 }
 
-template<class T> GLenum get_index_type()  { return 0; }
+template<class T> GLenum get_index_type()  { return assert(0 && "get_index_type expects only uint8, uint16, uint32 types!"); }
 template<> GLenum get_index_type<uint8 >() { return GL_UNSIGNED_BYTE;  }
 template<> GLenum get_index_type<uint16>() { return GL_UNSIGNED_SHORT; }
 template<> GLenum get_index_type<uint32>() { return GL_UNSIGNED_INT;   }
@@ -997,55 +1003,138 @@ uint create_vertex_array() {
   return buffer;
 }
 
-uint create_vertex_buffer(Create_Vertex_Buffer vbo) {
+uint create_vertex_buffer(Create_Vertex_Buffer vbo, GLenum mode = GL_STATIC_DRAW) {
   uint buffer;
   glGenBuffers(1, &buffer);
+  uint create_vertex_buffer_data(uint, Create_Vertex_Buffer, GLenum);
+  return create_vertex_buffer_data(buffer, vbo, mode);
+}
+
+uint create_vertex_buffer_data(uint buffer, Create_Vertex_Buffer vbo, GLenum mode = GL_STATIC_DRAW) {
   glBindBuffer(GL_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(*vbo.data) * vbo.size, vbo.data, GL_STATIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(*vbo.data) * vbo.size, vbo.data, mode);
+  return buffer;
+}
+
+uint update_vertex_buffer_data(uint buffer, Create_Vertex_Buffer vbo) {
+  glBindBuffer(GL_ARRAY_BUFFER, buffer);
+  glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(*vbo.data) * vbo.size, vbo.data);
   return buffer;
 }
 
 template<class T>
-uint create_index_buffer(Create_Index_Buffer<T> ibo) {
+uint create_index_buffer(Create_Index_Buffer<T> ibo, GLenum mode = GL_STATIC_DRAW) {
   uint buffer;
   glGenBuffers(1, &buffer);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(*ibo.data) * ibo.size, ibo.data, GL_STATIC_DRAW);
-  return buffer;
+  return create_index_buffer_data(buffer, ibo, mode);
 }
 
 template<class T>
-Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo) {
+uint create_index_buffer_data(uint buffer, Create_Index_Buffer<T> ibo, GLenum mode = GL_STATIC_DRAW) {
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(*ibo.data) * ibo.size, ibo.data, mode);
+  return buffer;
+}
+
+Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, GLenum primitive = 0, GLenum drawing_mode = GL_STATIC_DRAW) {
+  assert(primitive && "rendering primitive was not provided when creating vertex buffer object!");
+
+  int number_of_vertices_per_primitive;
+  switch(primitive) {
+  case GL_LINES:      number_of_vertices_per_primitive = 2; break;;
+  case GL_TRIANGLES:  number_of_vertices_per_primitive = 3; break;;
+  default: assert(0 && "unknown rendering primitive!");     break;
+  }
+  assert((vbo.size % number_of_vertices_per_primitive) == 0);
+
   uint vao_id = create_vertex_array();
-  uint vbo_id = create_vertex_buffer(vbo);
-  uint ibo_id = create_index_buffer(ibo);
+  uint vbo_id = create_vertex_buffer(vbo, drawing_mode);
+  uint ibo_id = 0;
 
   Vertex_Array va;
   va.vao = vao_id;
   va.vbo = vbo_id;
   va.ibo = ibo_id;
 
-  //va.vbo_attribute_index_in_enabled_array = 0;
-  va.vbo_number_of_vertices_to_draw = vbo.size;
-
-  va.ibo_type_of_indices = get_index_type<T>();
-  va.ibo_number_of_indices_to_draw = ibo.size;
-  //va.ibo_indices_array = NULL;
+  va.vbo_attribute_index_in_enabled_array = 0;
+  va.vbo_number_of_vertices_to_draw = vbo.size/number_of_vertices_per_primitive;
+  va.vbo_primitive_to_render        = primitive;
   return va;
 }
 
-Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo) {
+template<class T>
+Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo, GLenum drawing_mode = GL_STATIC_DRAW) {
   uint vao_id = create_vertex_array();
-  uint vbo_id = create_vertex_buffer(vbo);
+  uint vbo_id = create_vertex_buffer(vbo, drawing_mode);
+  uint ibo_id = create_index_buffer(ibo, drawing_mode);
 
   Vertex_Array va;
   va.vao = vao_id;
   va.vbo = vbo_id;
+  va.ibo = ibo_id;
 
-  //va.vbo_attribute_index_in_enabled_array = 0;
-  va.vbo_number_of_vertices_to_draw = vbo.size;
+  va.ibo_type_of_indices = get_index_type<T>();
+  va.ibo_number_of_elements_to_draw = ibo.size;
+  va.ibo_indices_array = NULL;
   return va;
 }
+
+#if 0
+template<class T>
+Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo, Vertex_Attribute attrib, GLenum primitive = 0, GLenum mode = GL_STATIC_DRAW) {
+  uint vao_id = create_vertex_array();
+  uint vbo_id = create_vertex_buffer(vbo, mode);
+  uint ibo_id = create_index_buffer(ibo, mode);
+
+  Vertex_Array va = {};
+  va.vao = vao_id;
+  va.vbo = vbo_id;
+  va.ibo = ibo_id;
+
+  va.kind_of_primitive = primitive;
+  return va;
+}
+#endif
+
+#if 0
+template<class T>
+uint update_index_buffer_data(uint buffer, Create_Index_Buffer<T> ibo) {
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
+  glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(*ibo.data) * ibo.size, ibo.data);
+  return buffer;
+}
+
+template<class T>
+Vertex_Array update_vertex_array_data(Vertex_Array va, Create_Vertex_Buffer vbo) {
+  assert(va.vao);
+  assert(va.vbo);
+  assert(va.ibo);
+
+  udpate_vertex_buffer_data(va.vbo, vbo);
+  udpate_index_buffer_data(va.ibo, ibo);
+
+  va.vbo_attribute_index_in_enabled_array = 0;
+  va.vbo_number_of_vertices_provided = vbo.size;
+  return va;
+}
+#endif
+
+#if 0
+template<class T>
+Vertex_Array update_vertex_array_data(Vertex_Array va, Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo) {
+  assert(va.vao);
+  assert(va.vbo);
+  assert(va.ibo);
+
+  udpate_vertex_buffer_data(va.vbo, vbo);
+  udpate_index_buffer_data(va.ibo, ibo);
+
+  va.ibo_type_of_indices = get_index_type<T>();
+  va.ibo_number_of_elements_provided = ibo.size;
+  va.ibo_indices_array = NULL;
+  return va;
+}
+#endif
 
 void bind_vertex_array(uint vao)  { glBindVertexArray(vao); }
 void bind_vertex_buffer(uint vbo) { glBindBuffer(GL_ARRAY_BUFFER, vbo); }
@@ -1057,19 +1146,23 @@ void bind_shader(Shader shader) {
 }
 
 void draw_call(GLenum draw_mode, Vertex_Array va) {
-  bind_vertex_array(va.vao);
   if (va.ibo) {
+    assert(draw_mode);
+
+    bind_vertex_array(va.vao);
     glDrawElements(draw_mode,
-                   va.ibo_number_of_indices_to_draw,
+                   va.ibo_number_of_elements_to_draw,
                    va.ibo_type_of_indices,
                    va.ibo_indices_array);
 
   } else if (va.vbo) {
-    glDrawArrays(draw_mode,
+    assert(draw_mode == va.vbo_primitive_to_render);
+
+    bind_vertex_array(va.vao);
+    glDrawArrays(va.vbo_primitive_to_render,
                  va.vbo_attribute_index_in_enabled_array,
                  va.vbo_number_of_vertices_to_draw);
   } else {
-    assert(0);
   }
   // @Log: Successfully issued a draw call!
 }
@@ -1150,8 +1243,8 @@ void do_the_thing(void* memory, float radius, float L, float packing_factor, siz
     measure_scope();
     process_random_walk(&grid, &positions, radius, max_random_walking_distance);
   }
-  //assert(check_circles_are_inside_a_box(&positions, radius));
-  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
+  assert(check_circles_are_inside_a_box(&positions, radius));
+  assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
   memory = (uint8*)grid.data + grid.number_of_cells * sizeof(*grid.data);
 
@@ -1251,6 +1344,10 @@ static int computation_thread_proc(void* param) {
                &largest_cluster_size);
 
   InterlockedExchange64(&result_largest_cluster_size, (int64) largest_cluster_size);
+
+  // 
+  // 
+  //
   return 0;
 }
 
@@ -1264,31 +1361,26 @@ void init_program(int width, int height) {
   {
     init_circles_vertices_and_indices_data();
   }
-
-
   {
     uint seed = time(NULL);
     srand(seed);
   }
-
   {
     // Initialize default input;
     Thread_Data* data = &thread_data;
     data->memory = malloc(MEMORY_ALLOCATION_SIZE);
-    data->particle_radius               = 0.1;
+    data->particle_radius = 0.1;
     data->jumping_conductivity_distance = 1.5 * data->particle_radius;
-    data->packing_factor                = 0.7;
+    data->packing_factor = 0.5;
 
-    // @RemoveMe: 
-    size_t largest_cluster_size;
+    size_t junk;
     do_the_thing(data->memory,
                  data->particle_radius,
                  data->jumping_conductivity_distance,
                  data->packing_factor,
-                 &largest_cluster_size);
+                 &junk);
   }
-
-  {
+  { // loading shaders.
     Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
     basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
     basic_shader.setup_uniform = basic_shader_uniform;
@@ -1298,16 +1390,16 @@ void init_program(int width, int height) {
     assert(basic_shader_data.uniform_mvp != -1);
   }
   { // line
-    Create_Vertex_Buffer buffer;
-    buffer.data = lines_vertices_data;
-    buffer.size = array_size(lines_vertices_data);
+    Create_Vertex_Buffer vbo;
+    vbo.data = lines_vertices_data;
+    vbo.size = array_size(lines_vertices_data);
 
-    line = create_vertex_array(buffer);
+    line = create_vertex_array(vbo, GL_LINES);
 
     Vertex_Attribute va;
     va.attribute_index = 0;
     va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes = sizeof(*buffer.data) * 2;
+    va.size_of_one_vertex_in_bytes = sizeof(float) * 2;
     add_vertex_attribute(va);
   }
   { // quad
@@ -1345,10 +1437,10 @@ void init_program(int width, int height) {
     va.size_of_one_vertex_in_bytes = sizeof(*circles_vertices_data) * 2;
     add_vertex_attribute(va);
   }
-  { // batched circles
-    size_t size   = global_positions.size;
-    float* vertex = (float *) alloca(size * array_size(circles_vertices_data) * sizeof(float));
-    uint32* index = (uint32*) alloca(size * array_size(circles_indices_data)  * sizeof(uint32));
+  { // batched circles // @Incomplete: I need better circle drawing, because now we draw circles as GL_LINES, so we can't really batch them together, they are all connected to each other.
+    size_t size = global_positions.size;
+    float* vertex = (float*)alloca(size * array_size(circles_vertices_data) * sizeof(float));
+    uint32* index = (uint32*)alloca(size * array_size(circles_indices_data) * sizeof(uint32));
 
     size_t vertex_count = 0;
     size_t index_count = 0;
@@ -1360,7 +1452,7 @@ void init_program(int width, int height) {
       // these are world coordinates, but they are already normalized.
 
       for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
-        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k+1] }; // these are local coordinates.
+        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
 
         local = norm_size * local; // scale
         Vec2 pos = world + local;
@@ -1374,8 +1466,7 @@ void init_program(int width, int height) {
         index[index_count++] = idx + circles_indices_data[k];
       }
     }
-
-    { 
+    {
       Create_Vertex_Buffer vbo;
       Create_Index_Buffer<uint32> ibo;
 
@@ -1458,7 +1549,6 @@ void init_program(int width, int height) {
       add_vertex_attribute(va);
     }
   }
-
   {
     ImGui::StyleColorsDark();
   }
@@ -1475,10 +1565,10 @@ void update_and_render(GLFWwindow* window) {
   static bool show_visual_line  = true;
   static bool show_visual_grid  = true;
   static bool show_visual_spheres = true;
+  static bool update_the_thing    = false;
 
   Vec4 visual_ui_min = {};
   Vec4 visual_ui_max = {};
-  int width, height;
 
 
   ImGuiIO& io = ImGui::GetIO();
@@ -1519,7 +1609,9 @@ void update_and_render(GLFWwindow* window) {
     float jumping_conductivity_distance = thread_data.jumping_conductivity_distance;
     float packing_factor                = thread_data.packing_factor;
 
+
     ImGui::Begin("Control Window");
+    if (ImGui::Button("Update The Thing")) update_the_thing = true;
     ImGui::Checkbox("Demo Window", &show_demo_window);
     ImGui::Checkbox("Visual UI", &show_visual_ui);
     ImGui::Checkbox("Visual Line",    &show_visual_line);
@@ -1570,11 +1662,75 @@ void update_and_render(GLFWwindow* window) {
     ImGui::End();
   }
 
+  int width, height;
+
   // Render
   ImGui::Render();
   glfwGetFramebufferSize(window, &width, &height);
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  if (update_the_thing) {
+#if 0
+    update_the_thing = false;
+    Thread_Data* data = &thread_data;
+    size_t size;
+    do_the_thing(data->memory,
+                 data->particle_radius,
+                 data->jumping_conductivity_distance,
+                 data->packing_factor,
+                 &size);
+
+  { // batched circles
+    size_t size = global_positions.size;
+    float* vertex = (float*)alloca(size * array_size(circles_vertices_data) * sizeof(float));
+    uint32* index = (uint32*)alloca(size * array_size(circles_indices_data) * sizeof(uint32));
+
+    size_t vertex_count = 0;
+    size_t index_count = 0;
+
+    float norm_size = thread_data.particle_radius;
+
+    for (size_t i = 0; i < size; i++) {
+      Vec2 world = global_positions[i];
+      // these are world coordinates, but they are already normalized.
+
+      for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
+        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
+
+        local = norm_size * local; // scale
+        Vec2 pos = world + local;
+
+        vertex[vertex_count++] = pos.x;
+        vertex[vertex_count++] = pos.y;
+      }
+
+      size_t idx = i * array_size(circles_indices_data);
+      for (size_t k = 0; k < array_size(circles_indices_data); k++) {
+        index[index_count++] = idx + circles_indices_data[k];
+      }
+    }
+    {
+      Create_Vertex_Buffer vbo;
+      Create_Index_Buffer<uint32> ibo;
+
+      vbo.data = vertex;
+      vbo.size = vertex_count;
+
+      ibo.data = index;
+      ibo.size = index_count;
+
+      batched_circles = create_vertex_array(vbo, ibo);
+
+      Vertex_Attribute va;
+      va.attribute_index = 0;
+      va.number_of_values_in_an_attribute = 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
+      add_vertex_attribute(va);
+    }
+  }
+#endif
+  }
 
   if (show_visual_ui) {
     bind_vertex_array(0);
@@ -1595,6 +1751,8 @@ void update_and_render(GLFWwindow* window) {
     Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
     data->mvp = (float*) &projection;
     bind_shader(basic_shader);
+
+    draw_call(GL_LINES, circle);
 
     if (show_visual_line) {
       draw_call(GL_LINES, line);
