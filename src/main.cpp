@@ -12,6 +12,19 @@ typedef uint64_t uint64;
 
 typedef uint32 uint;
 
+#define max(x, y)        ( (x) > (y) ? (x) : (y) )
+#define min(x, y)        ( (x) < (y) ? (x) : (y) )
+#define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
+#define square(x)        ( (x) * (x) )
+#define round_down(x)    ( (size_t)(round((float)(x) + 0.5f) - 1) )
+#define array_size(x)    ( sizeof( x )/sizeof( *(x) ) )
+#define make_string(x)   { (char* )(x), sizeof(x)-1 }
+#define measure_scope() Timer ANONYMOUS_NAME
+#define defer auto ANONYMOUS_NAME = Junk{} + [&]()
+#define ANONYMOUS_NAME CONCAT(GAMMA, __LINE__)
+#define CONCAT(A, B) CONCAT_IMPL(A, B)
+#define CONCAT_IMPL(A, B) A##B
+
 
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
@@ -27,22 +40,46 @@ const float right_boundary =  1.0f;
 const float lower_boundary = -1.0f;
 const float upper_boundary =  1.0f;
 
-#define max(x, y)        ( (x) > (y) ? (x) : (y) )
-#define min(x, y)        ( (x) < (y) ? (x) : (y) )
+const float lines_vertices_data[] = {
+  -1.0f, -1.0f,
+   1.0f,  1.0f,
+};
 
-#define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
+const float quads_vertices_data[] = {
+  -0.5f, -0.5f,
+  -0.5f,  0.5f,
+   0.5f, -0.5f,
+   0.5f,  0.5f,
+};
 
-#define square(x)     ( (x) * (x) )
-#define round_down(x) ( (size_t)(round((float)(x) + 0.5f) - 1) )
-#define array_size(x) ( sizeof( x )/sizeof( *(x) ) )
-#define make_string(x) { (char* )(x), sizeof(x)-1 }
+const uint8 quads_indices_data[] = {
+  0, 1,
+  0, 2,
+  1, 3,
+  2, 3,
+};
 
-#define measure_scope() Timer ANONYMOUS_NAME
+const int NUMBER_OF_VERTICES_FOR_A_CIRCLE = 40;
+float   circles_vertices_data[NUMBER_OF_VERTICES_FOR_A_CIRCLE] = {};
+uint32  circles_indices_data [NUMBER_OF_VERTICES_FOR_A_CIRCLE] = {};
 
-#define defer auto ANONYMOUS_NAME = Junk{} + [&]()
-#define ANONYMOUS_NAME CONCAT(GAMMA, __LINE__)
-#define CONCAT(A, B) CONCAT_IMPL(A, B)
-#define CONCAT_IMPL(A, B) A##B
+void init_circles_vertices_and_indices_data() {
+  float * vertex = circles_vertices_data;
+  uint32* index  = circles_indices_data;
+
+  float  a = 0;
+  float da = TAU / (float)(NUMBER_OF_VERTICES_FOR_A_CIRCLE/2 - 1); // @Incomplete: add some checks to know this is correct.
+  for (int i = 0; i < array_size(circles_vertices_data); i += 2) {
+    vertex[i + 0] = cos(a);
+    vertex[i + 1] = sin(a);
+    a += da;
+  }
+
+  for (int i = 0; i < array_size(circles_indices_data); i++) {
+    index[i] = i;
+  }
+}
+
 
 template<class T>
 struct Defer {
@@ -1225,6 +1262,11 @@ void init_program(int width, int height) {
   check_threads_api();
 
   {
+    init_circles_vertices_and_indices_data();
+  }
+
+
+  {
     uint seed = time(NULL);
     srand(seed);
   }
@@ -1255,105 +1297,10 @@ void init_program(int width, int height) {
     basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
     assert(basic_shader_data.uniform_mvp != -1);
   }
-  {
-    const uint NUM_VERTICES = 40;
-
-    dynamic_array<float>  vertex;
-    dynamic_array<uint32> index;
-    array_resize(&vertex, NUM_VERTICES * 2);
-    array_resize(&index, NUM_VERTICES * 2);
-
-    defer { array_free(&vertex); };
-    defer { array_free(&index); };
-
-    {
-      float  a = 0;
-      float da = TAU / (double)(NUM_VERTICES - 2);
-      for (size_t i = 0; i < vertex.size; i += 2) {
-        vertex[i + 0] = cos(a);
-        vertex[i + 1] = sin(a);
-        a += da;
-      }
-
-      for (size_t i = 0; i < index.size; i++) {
-        index[i] = i;
-      }
-    }
-
-    { 
-      Create_Vertex_Buffer vbo;
-      Create_Index_Buffer<uint32> ibo;
-
-      vbo.data = vertex.data;
-      vbo.size = vertex.size;
-
-      ibo.data = index.data;
-      ibo.size = index.size;
-
-      circle = create_vertex_array(vbo, ibo);
-
-      Vertex_Attribute va;
-      va.attribute_index = 0;
-      va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
-      add_vertex_attribute(va);
-    }
-
-    dynamic_array<float>  positions;
-    dynamic_array<uint32> indices;
-
-    defer { array_free(&positions); };
-    defer { array_free(&indices); };
-
-    float norm_size = thread_data.particle_radius;
-    for (size_t i = 0; i < global_positions.size; i++) {
-      Vec2 world = global_positions[i];
-      // these are world coordinates, but they are already normalized.
-
-      for (size_t k = 0; k < vertex.size; k += 2) {
-        Vec2 local = { vertex[k], vertex[k+1] }; // these are local coordinates.
-
-        local = norm_size * local; // scale
-        Vec2 pos = world + local;
-
-        array_add(&positions, pos.x);
-        array_add(&positions, pos.y);
-      }
-
-      size_t idx = i * index.size;
-      for (size_t k = 0; k < index.size; k++) {
-        array_add(&indices, idx + index[k]);
-      }
-    }
-
-    { 
-      Create_Vertex_Buffer vbo;
-      Create_Index_Buffer<uint32> ibo;
-
-      vbo.data = positions.data;
-      vbo.size = positions.size;
-
-      ibo.data = indices.data;
-      ibo.size = indices.size;
-
-      batched_circles = create_vertex_array(vbo, ibo);
-
-      Vertex_Attribute va;
-      va.attribute_index = 0;
-      va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
-      add_vertex_attribute(va);
-    }
-  }
-  {
-    const float lines[] = {
-      -1.0f, -1.0f,
-       1.0f,  1.0f,
-    };
-
+  { // line
     Create_Vertex_Buffer buffer;
-    buffer.data = lines;
-    buffer.size = array_size(lines);
+    buffer.data = lines_vertices_data;
+    buffer.size = array_size(lines_vertices_data);
 
     line = create_vertex_array(buffer);
 
@@ -1363,54 +1310,102 @@ void init_program(int width, int height) {
     va.size_of_one_vertex_in_bytes = sizeof(*buffer.data) * 2;
     add_vertex_attribute(va);
   }
-  {
-    const float quads[] = {
-      -0.5f, -0.5f,
-      -0.5f,  0.5f,
-       0.5f, -0.5f,
-       0.5f,  0.5f,
-    };
+  { // quad
+    Create_Vertex_Buffer vbo;
+    vbo.data = quads_vertices_data;
+    vbo.size = array_size(quads_vertices_data);
 
-    const uint8 indices[] = {
-      0, 1,
-      0, 2,
-      1, 3,
-      2, 3,
-    };
+    Create_Index_Buffer<uint8> ibo;
+    ibo.data = quads_indices_data;
+    ibo.size = array_size(quads_indices_data);
 
-    {
-      Create_Vertex_Buffer vertex;
-      vertex.data = quads;
-      vertex.size = array_size(quads);
+    quad = create_vertex_array(vbo, ibo);
 
-      Create_Index_Buffer<uint8> index;
-      index.data = indices;
-      index.size = array_size(indices);
+    Vertex_Attribute va;
+    va.attribute_index = 0;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes = sizeof(*quads_vertices_data) * 2;
+    add_vertex_attribute(va);
+  }
+  { // circle
+    Create_Vertex_Buffer vbo;
+    Create_Index_Buffer<uint32> ibo;
 
-      quad = create_vertex_array(vertex, index);
+    vbo.data = circles_vertices_data;
+    vbo.size = array_size(circles_vertices_data);
+
+    ibo.data = circles_indices_data;
+    ibo.size = array_size(circles_indices_data);
+
+    circle = create_vertex_array(vbo, ibo);
+
+    Vertex_Attribute va;
+    va.attribute_index = 0;
+    va.number_of_values_in_an_attribute = 2;
+    va.size_of_one_vertex_in_bytes = sizeof(*circles_vertices_data) * 2;
+    add_vertex_attribute(va);
+  }
+  { // batched circles
+    size_t size   = global_positions.size;
+    float* vertex = (float *) alloca(size * array_size(circles_vertices_data) * sizeof(float));
+    uint32* index = (uint32*) alloca(size * array_size(circles_indices_data)  * sizeof(uint32));
+
+    size_t vertex_count = 0;
+    size_t index_count = 0;
+
+    float norm_size = thread_data.particle_radius;
+
+    for (size_t i = 0; i < size; i++) {
+      Vec2 world = global_positions[i];
+      // these are world coordinates, but they are already normalized.
+
+      for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
+        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k+1] }; // these are local coordinates.
+
+        local = norm_size * local; // scale
+        Vec2 pos = world + local;
+
+        vertex[vertex_count++] = pos.x;
+        vertex[vertex_count++] = pos.y;
+      }
+
+      size_t idx = i * array_size(circles_indices_data);
+      for (size_t k = 0; k < array_size(circles_indices_data); k++) {
+        index[index_count++] = idx + circles_indices_data[k];
+      }
+    }
+
+    { 
+      Create_Vertex_Buffer vbo;
+      Create_Index_Buffer<uint32> ibo;
+
+      vbo.data = vertex;
+      vbo.size = vertex_count;
+
+      ibo.data = index;
+      ibo.size = index_count;
+
+      batched_circles = create_vertex_array(vbo, ibo);
 
       Vertex_Attribute va;
       va.attribute_index = 0;
       va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
       add_vertex_attribute(va);
     }
-
-    dynamic_array<float>  vertex;
-    dynamic_array<uint32> index;
-
-    defer { array_free(&vertex); };
-    defer { array_free(&index); };
-
-    size_t  n_cells = global_grid.number_of_cells_per_dimension;
-    float cell_size = global_grid.cell_size;
-    float cap       = n_cells * cell_size;
-    float norm_size = 2.0f / (float)n_cells;
+  }
+  { // batched quads
+    size_t  n_cells   = global_grid.number_of_cells_per_dimension;
+    float cell_size   = global_grid.cell_size;
+    float norm_size   = 2.0f / (float)n_cells;
     float norm_offset = 0.5f;
 
-    array_reserve(&vertex,  n_cells * n_cells * array_size(quads));
-    array_reserve(&index, vertex.capacity);
+    size_t number_of_batched_vertices = n_cells * n_cells * array_size(quads_vertices_data);
+    float*  vertex = (float *) alloca(number_of_batched_vertices * sizeof(float));
+    uint32* index  = (uint32*) alloca(number_of_batched_vertices * sizeof(uint32));
 
+    size_t vertex_count = 0;
+    size_t index_count  = 0;
 
     for (size_t i = 0; i < n_cells; i++) {
       for (size_t j = 0; j < n_cells; j++) {
@@ -1429,38 +1424,37 @@ void init_program(int width, int height) {
 
         center = norm_size * center  - Vec2{ 1.0f, 1.0f }; // now they are also in normalized space.
 
-        size_t idx = vertex.size / 2;
+        size_t idx = vertex_count / 2;
 
-        for (size_t k = 0; k < array_size(quads); k += 2) {
-          Vec2 local = { quads[k], quads[k+1] }; // this is my local coordinates.
+        for (size_t k = 0; k < array_size(quads_vertices_data); k += 2) {
+          Vec2 local = { quads_vertices_data[k], quads_vertices_data[k+1] }; // this is my local coordinates.
 
           local = norm_size * (local + Vec2{ norm_offset, norm_offset }); // translate & scale.
           Vec2 pos = center + local;
 
-          array_add(&vertex, pos.x);
-          array_add(&vertex, pos.y);
-
-          array_add(&index, idx + indices[k]);
-          array_add(&index, idx + indices[k+1]);
+          vertex[vertex_count++] = pos.x;
+          vertex[vertex_count++] = pos.y;
+          
+          index[index_count++] = idx + quads_indices_data[k];
+          index[index_count++] = idx + quads_indices_data[k+1];
         }
       }
     }
-
     {
       Create_Vertex_Buffer vbo;
-      vbo.data = vertex.data;
-      vbo.size = vertex.size;
+      vbo.data = vertex;
+      vbo.size = vertex_count;
 
       Create_Index_Buffer<uint32> ibo;
-      ibo.data = index.data;
-      ibo.size = index.size;
+      ibo.data = index;
+      ibo.size = index_count;
 
       batched_quads = create_vertex_array(vbo, ibo);
 
       Vertex_Attribute va;
       va.attribute_index = 0;
       va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex.data) * 2;
+      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
       add_vertex_attribute(va);
     }
   }
@@ -1531,8 +1525,6 @@ void update_and_render(GLFWwindow* window) {
     ImGui::Checkbox("Visual Line",    &show_visual_line);
     ImGui::Checkbox("Visual Grid",    &show_visual_grid);
     ImGui::Checkbox("Visual Spheres", &show_visual_spheres);
-    ImGui::Checkbox("Visual Spheres Radius",       &show_visual_spheres_radius);
-    ImGui::Checkbox("Visual Spheres Conductivity", &show_visual_spheres_conductivity);
 
     ImGui::InputFloat("Particle radius",               &particle_radius,               step, step_fast, format, flags);
     ImGui::InputFloat("Jumping conductivity distance", &jumping_conductivity_distance, step, step_fast, format, flags);
@@ -1547,7 +1539,7 @@ void update_and_render(GLFWwindow* window) {
     InterlockedExchange((uint*) &thread_data.jumping_conductivity_distance, *(uint*) &jumping_conductivity_distance);
     InterlockedExchange((uint*) &thread_data.packing_factor,                *(uint*) &packing_factor);
 
-
+  
     if (ImGui::Button("Start")) {
       if (thread_is_paused) {
         resume_thread(&computation_thread);
@@ -1593,6 +1585,7 @@ void update_and_render(GLFWwindow* window) {
     // y axis is flipped because screen coordinates increase from up to down. We can't workaround that :(
     const Vec4 min = { -1.0f,  1.0f, 0.0f, 1.0f };
     const Vec4 max = {  1.0f, -1.0f, 0.0f, 1.0f };
+
     Matrix4x4 t = transform_screen_space_to_normalized_space(width, height);
     visual_ui_min = t * visual_ui_min;
     visual_ui_max = t * visual_ui_max;
