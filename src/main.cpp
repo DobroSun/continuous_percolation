@@ -1,5 +1,6 @@
 #define GLEW_STATIC
 
+#include <random>
 
 typedef int8_t  int8;
 typedef int16_t int16;
@@ -13,6 +14,7 @@ typedef uint64_t uint64;
 
 typedef uint32 uint;
 
+#define abs(x)           ( (x) > 0   ? (x) : -(x) )
 #define max(x, y)        ( (x) > (y) ? (x) : (y) )
 #define min(x, y)        ( (x) < (y) ? (x) : (y) )
 #define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
@@ -29,8 +31,8 @@ typedef uint32 uint;
 
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
-const uint CELL_IS_NOT_OCCUPIED = 0xFFFFFFFF;
-const size_t MEMORY_ALLOCATION_SIZE = 1e6;//1e10;  // ~ 10 gigabytes.
+const uint CELL_IS_EMPTY = 0xFFFFFFFF;
+const size_t MEMORY_ALLOCATION_SIZE = 1e6; //1e10;  // ~ 10 gigabytes.
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
@@ -138,6 +140,16 @@ struct Vec4 {
   float x, y, z, w;
 };
 
+struct Line {
+  Vec2 origin;
+  Vec2  direction;
+};
+
+struct Circle {
+  Vec2 origin;
+  float radius;
+};
+
 struct Matrix4x4 {
   float m11, m12, m13, m14, 
         m21, m22, m23, m24,
@@ -229,6 +241,24 @@ Vec2 operator-(Vec2 a, Vec2 b)  { return { a.x - b.x, a.y - b.y }; }
 Vec2 operator*(Vec2 a, float c) { return { c * a.x, c * a.y }; }
 Vec2 operator/(Vec2 a, float c) { return { a.x / c, a.y / c }; }
 Vec2 operator*(float c, Vec2 a) { return a * c; }
+
+double dot(Vec2 a, Vec2 b) {
+  return a.x * b.x + a.y * b.y;
+}
+
+float length_sq(Vec2 a) {
+  return dot(a, a);
+}
+
+bool line_and_circle_intersection(Line a, Circle b, double* distance) {
+  Vec2 dirr = a.direction;
+  Vec2 diff = a.origin - b.origin;
+
+  float distance_between_circle_origin_and_line = sqrt(length_sq(diff) - length_sq(dot(diff, dirr)/length_sq(dirr) * dirr));
+  if (distance) *distance = distance_between_circle_origin_and_line;
+  return distance_between_circle_origin_and_line < b.radius;
+}
+
 
 struct Grid_Position {
   uint i, j;
@@ -353,6 +383,13 @@ static Graph               global_graph     = {};
 static int64  result_largest_cluster_size = 0;
 
 
+double generate_random_double_in_range(double from, double to) {
+  static std::random_device rd;
+  static std::mt19937 e(rd());
+
+  std::uniform_real_distribution<double> dist(from, to);
+  return dist(e);
+}
 
 bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
 bool string_compare(string a, const char* b) { return string_compare(b, a); }
@@ -647,12 +684,150 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
 
     uint n = get_circle_id_on_a_grid(grid, *point);
 
-    assert(grid->data[n] == CELL_IS_NOT_OCCUPIED);
+    assert(grid->data[n] == CELL_IS_EMPTY);
     grid->data[n] = k;
   }
 }
 
+
+void take_all_neighbours_with_distance(Grid2D* grid, dynamic_array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
+
+  Vec2 new_point = point + Vec2{ distance, distance };
+
+  Grid_Position p = get_circle_position_on_a_grid(grid,     point);
+  Grid_Position n = get_circle_position_on_a_grid(grid, new_point);
+
+  size_t width = grid->number_of_cells_per_dimension;
+  size_t di = abs((int64)n.i - (int64)p.i);
+  size_t dj = abs((int64)n.j - (int64)p.j);
+
+  size_t delta = max(di, dj);
+
+
+  // 
+  // now let's just iterate over all of the: possible neighbours. and find those that contain circles.
+  //  
+
+  size_t pis = p.i - delta;
+  size_t pie = p.i + delta;
+
+  size_t pjs = p.j - delta;
+  size_t pje = p.j + delta;
+
+  for (size_t i = pis; i < pie; i++) {
+    for (size_t j = pjs; j < pje; j++) {
+
+      if (i >= width || j >= width) { continue; }
+      if (i == p.i && j == p.j)     { continue; }
+
+      size_t index = i*width + j;
+      assert(index < grid->number_of_cells);
+
+      Grid_Cell cell_id = grid->data[index];
+      if (cell_id != CELL_IS_EMPTY) {
+        array_add(neighbours, cell_id);
+      }
+    }
+  }
+}
+
 void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float radius, float max_random_walking_distance) {
+#if 0
+  dynamic_array<Grid_Cell> neighbours;
+  dynamic_array<Grid_Cell> intersection;
+  dynamic_array<double>    intersection_distance;
+  dynamic_array<double>    distances;
+
+  defer { array_free(&neighbours); };
+  defer { array_free(&intersection); };
+  defer { array_free(&intersection_distance); };
+  defer { array_free(&distances); };
+
+  for (size_t i = 0; i < positions->size; i++) {
+    Vec2* point = &(*positions)[i];
+
+    // find all neighbours.
+    take_all_neighbours_with_distance(grid, &neighbours, *point, radius, max_random_walking_distance);
+
+    // 
+    // now we should find the one that is in our way.
+    // in order to do that, we should know the direction to move in.
+    //
+
+    double    direction = generate_random_double_in_range(0, TAU);
+    Vec2 unit_direction = { cos(direction), sin(direction) };
+
+    Line a;
+    a.origin    = *point;
+    a.direction = unit_direction;
+
+    // find all circles that are intersecting unit_direction.
+    for (size_t k = 0; k < neighbours.size; k++) {
+      Grid_Cell cell = neighbours[k];
+      Vec2*   origin = &(*positions)[cell];
+
+      Circle b;
+      b.origin = *origin;
+      b.radius = 2*radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
+
+      double distance;
+
+      if (dot(b.origin - a.origin, a.direction) > 0) { // in the same direction.
+        if (line_and_circle_intersection(a, b, &distance)) {
+          array_add(&intersection,          cell);
+          array_add(&intersection_distance, distance);
+        }
+      }
+    }
+
+    // find all min distances that we can put circle to.
+    for (size_t k = 0; k < intersection.size; k++) {
+      Grid_Cell cell = intersection[k];
+      Vec2*   origin = &(*positions)[cell];
+
+      double p = intersection_distance[k];
+      double l = 2*radius;
+
+      double delta = sqrt(l*l - p*p);
+      assert(0 <= delta && delta < 2*radius);
+
+      double  d = sqrt(length_sq(*origin - a.origin) - p*p);
+      double rd = d - delta;
+      array_add(&distances, rd);
+    }
+
+    // find min distance.
+    double min_dist = max_random_walking_distance;
+    for (size_t k = 0; k < distances.size; k++) {
+      min_dist = min(min_dist, distances[k]);
+    }
+
+    printf("%g : %g\n", min_dist, max_random_walking_distance);
+
+    double distance = generate_random_double_in_range(0, min_dist);
+    Vec2    jump_to = *point + distance*unit_direction;
+
+    jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
+    jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
+
+    uint p = get_circle_id_on_a_grid(grid, *point);
+    uint n = get_circle_id_on_a_grid(grid, jump_to);
+
+    Grid_Cell* previous_id = &grid->data[p];
+    Grid_Cell* next_id     = &grid->data[n];
+    bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
+    
+    assert(*previous_id == *next_id ? true : cell_is_not_occupied); // if we did a jump, next_id should be empty.
+
+    *point = jump_to;
+
+    if (*previous_id != *next_id) {
+      assert(*next_id == CELL_IS_EMPTY);
+      *next_id     = *previous_id;
+      *previous_id = CELL_IS_EMPTY;
+    }
+  }
+#else
   uint count = 0;
   Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
 
@@ -686,21 +861,22 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
 
     Grid_Cell* previous_id = &grid->data[p];
     Grid_Cell* next_id     = &grid->data[n];
-    bool cell_is_not_occupied = *next_id == CELL_IS_NOT_OCCUPIED;
+    bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
     
     if (cell_is_not_occupied) {
       *point = jump_to;
 
       if (*previous_id != *next_id) {
-        assert(*next_id == CELL_IS_NOT_OCCUPIED);
+        assert(*next_id == CELL_IS_EMPTY);
         *next_id     = *previous_id;
-        *previous_id = CELL_IS_NOT_OCCUPIED;
+        *previous_id = CELL_IS_EMPTY;
       }
     } else {
       distance /= 2.0f; // @Incomplete: we should probably do rand() again, not just ... /= 2.0f.
       goto jump;
     }
   }
+#endif
 }
 
 
@@ -733,8 +909,6 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     const Vec2* point = &(*array)[k];
     Grid_Position n = get_circle_position_on_a_grid(grid, *point);
 
-
-
     size_t num   = floor(2.0f*(radius+L)/grid->cell_size);
     size_t len   = 2*num + 1;
     size_t total = square(len) - 1;
@@ -756,7 +930,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
 
         Grid_Cell cell_id = grid->data[index];
 
-        if (cell_id != CELL_IS_NOT_OCCUPIED) {
+        if (cell_id != CELL_IS_EMPTY) {
           neighbours[count] = cell_id;
           count+= 1;
         }
@@ -766,7 +940,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
     for (uint c = 0; c < count; c++) {
       Grid_Cell cell_id = neighbours[c];
 
-      assert(cell_id != CELL_IS_NOT_OCCUPIED);
+      assert(cell_id != CELL_IS_EMPTY);
       Vec2 neighbour = (*array)[cell_id];
 
       if (check_for_connection(*point, neighbour, radius, L)) {
@@ -1361,14 +1535,14 @@ void init_program(int width, int height) {
   {
     init_circles_vertices_and_indices_data();
   }
-  {
+  { // @Incomplete: use std C++11 stuff.
     uint seed = time(NULL);
     srand(seed);
   }
   {
     // Initialize default input;
     Thread_Data* data = &thread_data;
-    data->memory = malloc(MEMORY_ALLOCATION_SIZE);
+    data->memory = malloc(MEMORY_ALLOCATION_SIZE); // @Incomplete: just use a memory arena, it's going to be way safer.
     data->particle_radius = 0.1;
     data->jumping_conductivity_distance = 1.5 * data->particle_radius;
     data->packing_factor = 0.5;
@@ -1448,8 +1622,8 @@ void init_program(int width, int height) {
     float norm_size = thread_data.particle_radius;
 
     for (size_t i = 0; i < size; i++) {
-      Vec2 world = global_positions[i];
-      // these are world coordinates, but they are already normalized.
+      Vec2 world = global_positions[i]; // these are world coordinates, but they are already normalized.
+      
 
       for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
         Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
@@ -1562,10 +1736,9 @@ void update_and_render(GLFWwindow* window) {
   static bool show_demo_window  = false;
   static bool thread_is_paused  = false;
   static bool show_visual_ui    = true;
-  static bool show_visual_line  = true;
-  static bool show_visual_grid  = true;
-  static bool show_visual_spheres = true;
-  static bool update_the_thing    = false;
+  static bool show_visual_line  = false;
+  static bool show_visual_grid  = false;
+  static bool show_visual_spheres = false;
 
   Vec4 visual_ui_min = {};
   Vec4 visual_ui_max = {};
@@ -1611,7 +1784,6 @@ void update_and_render(GLFWwindow* window) {
 
 
     ImGui::Begin("Control Window");
-    if (ImGui::Button("Update The Thing")) update_the_thing = true;
     ImGui::Checkbox("Demo Window", &show_demo_window);
     ImGui::Checkbox("Visual UI", &show_visual_ui);
     ImGui::Checkbox("Visual Line",    &show_visual_line);
@@ -1632,7 +1804,8 @@ void update_and_render(GLFWwindow* window) {
     InterlockedExchange((uint*) &thread_data.packing_factor,                *(uint*) &packing_factor);
 
   
-    if (ImGui::Button("Start")) {
+    const char* start_or_continue = thread_is_paused ? "Continue" : "Start";
+    if (ImGui::Button(start_or_continue)) {
       if (thread_is_paused) {
         resume_thread(&computation_thread);
         thread_is_paused = false;
@@ -1644,7 +1817,7 @@ void update_and_render(GLFWwindow* window) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Pause")) {
-      if (is_thread_running(&computation_thread)) {
+      if (!thread_is_paused && is_thread_running(&computation_thread)) {
         suspend_thread(&computation_thread);
         thread_is_paused = true;
       }
@@ -1670,68 +1843,6 @@ void update_and_render(GLFWwindow* window) {
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-  if (update_the_thing) {
-#if 0
-    update_the_thing = false;
-    Thread_Data* data = &thread_data;
-    size_t size;
-    do_the_thing(data->memory,
-                 data->particle_radius,
-                 data->jumping_conductivity_distance,
-                 data->packing_factor,
-                 &size);
-
-  { // batched circles
-    size_t size = global_positions.size;
-    float* vertex = (float*)alloca(size * array_size(circles_vertices_data) * sizeof(float));
-    uint32* index = (uint32*)alloca(size * array_size(circles_indices_data) * sizeof(uint32));
-
-    size_t vertex_count = 0;
-    size_t index_count = 0;
-
-    float norm_size = thread_data.particle_radius;
-
-    for (size_t i = 0; i < size; i++) {
-      Vec2 world = global_positions[i];
-      // these are world coordinates, but they are already normalized.
-
-      for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
-        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
-
-        local = norm_size * local; // scale
-        Vec2 pos = world + local;
-
-        vertex[vertex_count++] = pos.x;
-        vertex[vertex_count++] = pos.y;
-      }
-
-      size_t idx = i * array_size(circles_indices_data);
-      for (size_t k = 0; k < array_size(circles_indices_data); k++) {
-        index[index_count++] = idx + circles_indices_data[k];
-      }
-    }
-    {
-      Create_Vertex_Buffer vbo;
-      Create_Index_Buffer<uint32> ibo;
-
-      vbo.data = vertex;
-      vbo.size = vertex_count;
-
-      ibo.data = index;
-      ibo.size = index_count;
-
-      batched_circles = create_vertex_array(vbo, ibo);
-
-      Vertex_Attribute va;
-      va.attribute_index = 0;
-      va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
-      add_vertex_attribute(va);
-    }
-  }
-#endif
-  }
-
   if (show_visual_ui) {
     bind_vertex_array(0);
     bind_vertex_buffer(0);;
@@ -1751,8 +1862,6 @@ void update_and_render(GLFWwindow* window) {
     Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
     data->mvp = (float*) &projection;
     bind_shader(basic_shader);
-
-    draw_call(GL_LINES, circle);
 
     if (show_visual_line) {
       draw_call(GL_LINES, line);
