@@ -1,33 +1,8 @@
 #define GLEW_STATIC
 
+
 #include <random>
-
-typedef int8_t  int8;
-typedef int16_t int16;
-typedef int32_t int32;
-typedef int64_t int64;
-
-typedef uint8_t  uint8;
-typedef uint16_t uint16;
-typedef uint32_t uint32;
-typedef uint64_t uint64;
-
-typedef uint32 uint;
-
-#define abs(x)           ( (x) > 0   ? (x) : -(x) )
-#define max(x, y)        ( (x) > (y) ? (x) : (y) )
-#define min(x, y)        ( (x) < (y) ? (x) : (y) )
-#define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
-#define square(x)        ( (x) * (x) )
-#define round_down(x)    ( (size_t)(round((float)(x) + 0.5f) - 1) )
-#define array_size(x)    ( sizeof( x )/sizeof( *(x) ) )
-#define make_string(x)   { (char* )(x), sizeof(x)-1 }
-#define measure_scope() Timer ANONYMOUS_NAME
-#define defer auto ANONYMOUS_NAME = Junk{} + [&]()
-#define ANONYMOUS_NAME CONCAT(GAMMA, __LINE__)
-#define CONCAT(A, B) CONCAT_IMPL(A, B)
-#define CONCAT_IMPL(A, B) A##B
-
+#include "../std/pch.h"
 
 
 const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
@@ -56,7 +31,7 @@ const float quads_vertices_data[] = {
    0.5f,  0.5f,
 };
 
-const uint8 quads_indices_data[] = {
+const uint quads_indices_data[] = {
   0, 1,
   0, 2,
   1, 3,
@@ -74,53 +49,19 @@ void init_circles_vertices_and_indices_data() {
 
   float  a = 0;
   float da = TAU / (float)(NUMBER_OF_VERTICES_FOR_A_CIRCLE/2 - 1); // @Incomplete: add some checks to know this is correct.
-  for (int i = 0; i < array_size(circles_vertices_data); i += 2) {
+  for (int i = 0; i < static_array_size(circles_vertices_data); i += 2) {
     vertex[i + 0] = cos(a);
     vertex[i + 1] = sin(a);
     a += da;
   }
 
   int j = 0;
-  for (int i = 0; i < array_size(circles_indices_data); i += 2) {
+  for (int i = 0; i < static_array_size(circles_indices_data); i += 2) {
     index[i+0] = j;
     index[i+1] = j+1;
     j++;
   }
 }
-
-
-template<class T>
-struct Defer {
-  const T func;
-  Defer(const T f) : func(f) {}
-  ~Defer()         { func(); }
-};
-
-struct Junk {};
-template<class T> inline const Defer<T> operator+(Junk, const T f) { return f; }
-
-struct Timer {
-  std::chrono::steady_clock::time_point start;
-  std::chrono::steady_clock::time_point end;
-
-  Timer()  {
-    start = std::chrono::steady_clock::now();
-  }
-
-  ~Timer() { 
-    end = std::chrono::steady_clock::now(); 
-    double delta = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-    if(delta < 1000.) {
-      printf("%g ns\n", delta);
-    } else if(delta >= 1000. && delta < 1000000.) {
-      printf("%g us\n", delta/1000.);
-    } else if(delta >= 1000000. && delta < 1000000000.) {
-      printf("%g ms\n", delta/1000000.);
-    } else {
-      printf("%g s\n", delta/1000000000.);
-    }
-  }
-};
 
 struct string {
   char*  data;
@@ -1525,6 +1466,36 @@ static int computation_thread_proc(void* param) {
   return 0;
 }
 
+void abstract_the_thing(glm::vec2* positions, size_t positions_count, glm::vec2* source_vertex, size_t source_vertex_count, uint* source_index, size_t source_index_count, glm::vec2* out_vertex, size_t* out_vertex_count, uint* out_index, size_t* out_index_count) {
+
+  for (size_t i = 0; i < positions_count; i++) {
+    glm::vec2 world = positions[i];
+    glm::mat4 transform = glm::translate(glm::mat4(1), glm::vec3(world.x, world.y, 0));
+
+    for (size_t k = 0; k < source_vertex_count; k++) {
+      out_vertex[k] = transform * glm::vec4(source_vertex[k], 0, 0);
+      *out_vertex_count += sizeof(*out_vertex) / sizeof(float);
+    }
+
+    size_t idx = i * source_index_count;
+    for (size_t k = 0; k < source_index_count; k++) {
+      out_index[k] = idx + source_index[k];
+      *out_index_count += 1;
+    }
+  }
+}
+
+void make_grid_positions(const Grid2D* grid, glm::vec2* grid_vertices) {
+  size_t size = 0;
+  for (size_t i = 0; i < grid->number_of_cells_per_dimension; i++) {
+    for (size_t j = 0; j < grid->number_of_cells_per_dimension; j++) {
+      grid_vertices[size] = { (float)i, (float)j };
+      grid_vertices[size] /= grid->number_of_cells_per_dimension;
+      size++;
+    }
+  }
+}
+
 void init_program(int width, int height) {
   init_filesystem_api();
   init_threads_api();
@@ -1535,6 +1506,7 @@ void init_program(int width, int height) {
   {
     init_circles_vertices_and_indices_data();
   }
+
   { // @Incomplete: use std C++11 stuff.
     uint seed = time(NULL);
     srand(seed);
@@ -1563,10 +1535,12 @@ void init_program(int width, int height) {
     basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
     assert(basic_shader_data.uniform_mvp != -1);
   }
+
+#if 0
   { // line
     Create_Vertex_Buffer vbo;
     vbo.data = lines_vertices_data;
-    vbo.size = array_size(lines_vertices_data);
+    vbo.size = static_array_size(lines_vertices_data);
 
     line = create_vertex_array(vbo, GL_LINES);
 
@@ -1579,11 +1553,11 @@ void init_program(int width, int height) {
   { // quad
     Create_Vertex_Buffer vbo;
     vbo.data = quads_vertices_data;
-    vbo.size = array_size(quads_vertices_data);
+    vbo.size = static_array_size(quads_vertices_data);
 
-    Create_Index_Buffer<uint8> ibo;
+    Create_Index_Buffer<uint32> ibo;
     ibo.data = quads_indices_data;
-    ibo.size = array_size(quads_indices_data);
+    ibo.size = static_array_size(quads_indices_data);
 
     quad = create_vertex_array(vbo, ibo);
 
@@ -1598,10 +1572,10 @@ void init_program(int width, int height) {
     Create_Index_Buffer<uint32> ibo;
 
     vbo.data = circles_vertices_data;
-    vbo.size = array_size(circles_vertices_data);
+    vbo.size = static_array_size(circles_vertices_data);
 
     ibo.data = circles_indices_data;
-    ibo.size = array_size(circles_indices_data);
+    ibo.size = static_array_size(circles_indices_data);
 
     circle = create_vertex_array(vbo, ibo);
 
@@ -1613,8 +1587,8 @@ void init_program(int width, int height) {
   }
   { // batched circles // @Incomplete: I need better circle drawing, because now we draw circles as GL_LINES, so we can't really batch them together, they are all connected to each other.
     size_t size = global_positions.size;
-    float* vertex = (float*)alloca(size * array_size(circles_vertices_data) * sizeof(float));
-    uint32* index = (uint32*)alloca(size * array_size(circles_indices_data) * sizeof(uint32));
+    float* vertex = (float*)alloca(size * static_array_size(circles_vertices_data) * sizeof(float));
+    uint32* index = (uint32*)alloca(size * static_array_size(circles_indices_data) * sizeof(uint32));
 
     size_t vertex_count = 0;
     size_t index_count = 0;
@@ -1625,7 +1599,7 @@ void init_program(int width, int height) {
       Vec2 world = global_positions[i]; // these are world coordinates, but they are already normalized.
       
 
-      for (size_t k = 0; k < array_size(circles_vertices_data); k += 2) {
+      for (size_t k = 0; k < static_array_size(circles_vertices_data); k += 2) {
         Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
 
         local = norm_size * local; // scale
@@ -1635,8 +1609,8 @@ void init_program(int width, int height) {
         vertex[vertex_count++] = pos.y;
       }
 
-      size_t idx = i * array_size(circles_indices_data);
-      for (size_t k = 0; k < array_size(circles_indices_data); k++) {
+      size_t idx = i * static_array_size(circles_indices_data);
+      for (size_t k = 0; k < static_array_size(circles_indices_data); k++) {
         index[index_count++] = idx + circles_indices_data[k];
       }
     }
@@ -1659,13 +1633,45 @@ void init_program(int width, int height) {
       add_vertex_attribute(va);
     }
   }
+
+
   { // batched quads
+#if 0
+  size_t     num_world_vertices = square(global_grid.number_of_cells_per_dimension);
+  glm::vec2* world_vertices = (glm::vec2*) alloca(num_world_vertices * sizeof(*world_vertices));
+
+  make_grid_positions(&global_grid, world_vertices);
+
+  size_t num_vertices = num_world_vertices * static_array_size(quads_vertices_data);
+  size_t num_indices  = num_world_vertices * static_array_size(quads_indices_data);
+
+  size_t vertex_count = 0;
+  size_t index_count  = 0;
+  glm::vec2* vertex = (glm::vec2 *) alloca(num_vertices * sizeof(*vertex));
+  uint32* index  = (uint32*) alloca(num_indices  * sizeof(*index));
+
+  abstract_the_thing(world_vertices, num_world_vertices, (glm::vec2*) quads_vertices_data, static_array_size(quads_vertices_data), (uint*) quads_indices_data, static_array_size(quads_indices_data), vertex, &vertex_count, index, &index_count);
+
+  // @Incomplete: 
+  // apply scale & transform (can do that in a vertex shader).
+  //
+
+#if 0
+  for (size_t i = 0; i < vertex_count; i++) {
+    vertex[i] = 2.0f * vertex[i] - 1.0f;
+    printf("%g\n", vertex[i]);
+    assert(-1.0f <= vertex[i].x && vertex[i].x <= 1.0f);
+    assert(-1.0f <= vertex[i].y && vertex[i].y <= 1.0f);
+  }
+#endif
+
+#else
     size_t  n_cells   = global_grid.number_of_cells_per_dimension;
     float cell_size   = global_grid.cell_size;
     float norm_size   = 2.0f / (float)n_cells;
     float norm_offset = 0.5f;
 
-    size_t number_of_batched_vertices = n_cells * n_cells * array_size(quads_vertices_data);
+    size_t number_of_batched_vertices = n_cells * n_cells * static_array_size(quads_vertices_data);
     float*  vertex = (float *) alloca(number_of_batched_vertices * sizeof(float));
     uint32* index  = (uint32*) alloca(number_of_batched_vertices * sizeof(uint32));
 
@@ -1674,7 +1680,7 @@ void init_program(int width, int height) {
 
     for (size_t i = 0; i < n_cells; i++) {
       for (size_t j = 0; j < n_cells; j++) {
-        Vec2 center = { (float)(i), (float)(j) }; // this is my world coordinates!
+        Vec2 center = { (float)(i / (float)n_cells), (float)(j) / (float)n_cells }; // this is my world coordinates!
 
         // 
         // I want to combine world & local coordinates.
@@ -1687,27 +1693,32 @@ void init_program(int width, int height) {
         // then we can sum them up: center + local.
         //
 
-        center = norm_size * center  - Vec2{ 1.0f, 1.0f }; // now they are also in normalized space.
+        //center = norm_size * center  - Vec2{ 1.0f, 1.0f };
 
-        size_t idx = vertex_count / 2;
 
-        for (size_t k = 0; k < array_size(quads_vertices_data); k += 2) {
+        for (size_t k = 0; k < static_array_size(quads_vertices_data); k += 2) {
           Vec2 local = { quads_vertices_data[k], quads_vertices_data[k+1] }; // this is my local coordinates.
 
-          local = norm_size * (local + Vec2{ norm_offset, norm_offset }); // translate & scale.
+          //local = norm_size * (local + Vec2{ norm_offset, norm_offset }); // translate & scale.
           Vec2 pos = center + local;
+
+          pos = pos - Vec2{ norm_offset, norm_offset };
 
           vertex[vertex_count++] = pos.x;
           vertex[vertex_count++] = pos.y;
+        }
           
+        size_t idx = i * static_array_size(quads_indices_data);
+        for (size_t k = 0; k < static_array_size(quads_indices_data); k++) {
           index[index_count++] = idx + quads_indices_data[k];
-          index[index_count++] = idx + quads_indices_data[k+1];
         }
       }
     }
+#endif
+
     {
       Create_Vertex_Buffer vbo;
-      vbo.data = vertex;
+      vbo.data = (float*) vertex;
       vbo.size = vertex_count;
 
       Create_Index_Buffer<uint32> ibo;
@@ -1723,6 +1734,7 @@ void init_program(int width, int height) {
       add_vertex_attribute(va);
     }
   }
+#endif
   {
     ImGui::StyleColorsDark();
   }
@@ -1731,6 +1743,69 @@ void init_program(int width, int height) {
 void deinit_program() {
   free(thread_data.memory);
 }
+
+void draw_triangle() {
+  glBegin(GL_TRIANGLES);
+    glVertex2f(-0.5f, -0.5f);
+    glVertex2f(0.0f, 0.5f);
+    glVertex2f(0.5f, -0.5f);
+  glEnd();
+}
+
+void draw_circle(glm::vec2 position, glm::vec2 size) {
+  size_t N = static_array_size(circles_vertices_data);
+
+  glm::mat4 matrix = glm::translate(glm::mat4(1), glm::vec3(position, 0)) * glm::scale(glm::mat4(1), { size.x, size.y, 1.0f });
+
+  glBegin(GL_LINES);
+  for (size_t i = 0; i < N; i += 2) {
+    glm::vec4 v;
+    v.x = circles_vertices_data[i];
+    v.y = circles_vertices_data[i+1];
+    v.z = 0;
+    v.w = 1;
+
+    v = matrix * v;
+
+    glVertex2f(v.x, v.y);
+
+    v.x = circles_vertices_data[i+2];
+    v.y = circles_vertices_data[i+3];
+    v.z = 0;
+    v.w = 1;
+
+    v = matrix * v;
+
+    if (i < N-2) glVertex2f(v.x, v.y);
+  }
+  glEnd();
+}
+
+void draw_grid() {
+  size_t N        = global_grid.number_of_cells_per_dimension;
+  float cell_size = global_grid.cell_size;
+  float cap       = cell_size*N - 1;
+
+  glBegin(GL_LINES);
+  for (size_t i = 0; i < N+1; i++) { // N cells so (N+1) lines to draw.
+    float w = i*cell_size - 1;
+    glVertex2f(-1.0f, w);
+    glVertex2f( cap, w);
+    glVertex2f(w, -1.0f);
+    glVertex2f(w,  cap);
+  }
+  glEnd();
+}
+
+void draw_circles(Thread_Data* data) {
+  size_t N = global_positions.size;
+
+  for (size_t i = 0; i < N; i++) {
+    Vec2 v = global_positions[i];
+    draw_circle(glm::vec2(v.x, v.y), glm::vec2(data->particle_radius, data->particle_radius));
+  }
+}
+
 
 void update_and_render(GLFWwindow* window) {
   static bool show_demo_window  = false;
@@ -1742,6 +1817,9 @@ void update_and_render(GLFWwindow* window) {
 
   Vec4 visual_ui_min = {};
   Vec4 visual_ui_max = {};
+
+  int width, height;
+  glfwGetFramebufferSize(window, &width, &height);
 
 
   ImGuiIO& io = ImGui::GetIO();
@@ -1755,22 +1833,29 @@ void update_and_render(GLFWwindow* window) {
       ImGui::ShowDemoWindow(&show_demo_window);
   }
 
-  if (show_visual_ui) {
-    ImGui::Begin("#", NULL, ImGuiWindowFlags_NoCollapse || ImGuiWindowFlags_NoResize || ImGuiWindowFlags_NoTitleBar || ImGuiWindowFlags_NoScrollbar);
+  // Dummy window.
+  ImGui::Begin("#", NULL, ImGuiWindowFlags_NoCollapse || ImGuiWindowFlags_NoResize || ImGuiWindowFlags_NoTitleBar || ImGuiWindowFlags_NoScrollbar);
+  ImVec2 v_min = ImGui::GetWindowContentRegionMin();
+  ImVec2 v_max = ImGui::GetWindowContentRegionMax();
 
-    ImVec2 v_min = ImGui::GetWindowContentRegionMin();
-    ImVec2 v_max = ImGui::GetWindowContentRegionMax();
+  v_min.x += ImGui::GetWindowPos().x;
+  v_min.y += ImGui::GetWindowPos().y;
+  v_max.x += ImGui::GetWindowPos().x;
+  v_max.y += ImGui::GetWindowPos().y;
+  ImGui::End();
 
-    v_min.x += ImGui::GetWindowPos().x;
-    v_min.y += ImGui::GetWindowPos().y;
-    v_max.x += ImGui::GetWindowPos().x;
-    v_max.y += ImGui::GetWindowPos().y;
+  // y axis is flipped because screen coordinates increase from up to down. We can't workaround that :(
+  const Vec4 min = { -1.0f,  1.0f, 0.0f, 1.0f };
+  const Vec4 max = {  1.0f, -1.0f, 0.0f, 1.0f };
 
-    visual_ui_min = { v_min.x, v_min.y, 0, 1 };
-    visual_ui_max = { v_max.x, v_max.y, 0, 1 };
+  visual_ui_min = { v_min.x, v_min.y, 0, 1 };
+  visual_ui_max = { v_max.x, v_max.y, 0, 1 };
 
-    ImGui::End();
-  }
+  Matrix4x4 t = transform_screen_space_to_normalized_space(width, height);
+  visual_ui_min = t * visual_ui_min;
+  visual_ui_max = t * visual_ui_max;
+  // 
+
 
   {
     static const float step      = 0.0f;
@@ -1835,33 +1920,24 @@ void update_and_render(GLFWwindow* window) {
     ImGui::End();
   }
 
-  int width, height;
-
   // Render
   ImGui::Render();
-  glfwGetFramebufferSize(window, &width, &height);
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+
+  draw_grid();
+  draw_circles(&thread_data);
+
+  Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
+
+  Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
+  data->mvp = (float*) &projection;
+
+  bind_shader(basic_shader);
+
+
   if (show_visual_ui) {
-    bind_vertex_array(0);
-    bind_vertex_buffer(0);;
-    bind_index_buffer(0);
-    glUseProgram(0);
-
-    // y axis is flipped because screen coordinates increase from up to down. We can't workaround that :(
-    const Vec4 min = { -1.0f,  1.0f, 0.0f, 1.0f };
-    const Vec4 max = {  1.0f, -1.0f, 0.0f, 1.0f };
-
-    Matrix4x4 t = transform_screen_space_to_normalized_space(width, height);
-    visual_ui_min = t * visual_ui_min;
-    visual_ui_max = t * visual_ui_max;
-
-    Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
-
-    Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-    data->mvp = (float*) &projection;
-    bind_shader(basic_shader);
 
     if (show_visual_line) {
       draw_call(GL_LINES, line);
