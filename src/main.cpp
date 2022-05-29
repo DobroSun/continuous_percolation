@@ -631,7 +631,7 @@ void create_square_grid(Grid2D* grid, array<Vec2>* positions) {
 }
 
 
-void take_all_neighbours_with_distance(Grid2D* grid, array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
+void take_all_neighbours_with_distance(const Grid2D* grid, array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
 
   Vec2 new_point = point + Vec2{ distance, distance };
 
@@ -710,7 +710,7 @@ void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, flo
 
         Circle b;
         b.origin = *origin;
-        b.radius = radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
+        b.radius = 2*radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
 
         double distance;
 
@@ -791,52 +791,26 @@ void naive_collect_points_to_graph(Graph* graph, const array<Vec2>* array, float
   }
 }
 
-void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const array<Vec2>* array, float radius, float L) {
-  assert(array->size == graph->count);
+void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const array<Vec2>* positions, float radius, float L) {
+  assert(positions->size == graph->count);
 
-  size_t width = grid->number_of_cells_per_dimension;
+  array<Grid_Cell> neighbours;
+  defer { array_free(&neighbours); };
 
-  for (size_t k = 0; k < array->size; k++) {
+  for (size_t k = 0; k < positions->size; k++) {
+    Vec2 point = (*positions)[k];
+
+    array_clear(&neighbours);
+    take_all_neighbours_with_distance(grid, &neighbours, point, radius, L);
+
     graph->connected_nodes[k] = graph->graph_data;
-
-    const Vec2* point = &(*array)[k];
-    Grid_Position n = get_circle_position_on_a_grid(grid, *point);
-
-    size_t num   = floor(2.0f*(radius+L)/grid->cell_size);
-    size_t len   = 2*num + 1;
-    size_t total = square(len) - 1;
-
-    uint count = 0;
-    Grid_Cell* neighbours = (Grid_Cell*) alloca(sizeof(Grid_Cell) * total);
-
-    for (size_t i = 0; i < len; i++) {
-      for (size_t j = 0; j < len; j++) {
-
-        size_t pi = n.i + i - num;
-        size_t pj = n.j + j - num;
-
-        if (pi == n.i && pj == n.j)     { continue; }
-        if (pi >= width || pj >= width) { continue; }
-
-        size_t index = pi*width + pj;
-        assert(index < grid->number_of_cells);
-
-        Grid_Cell cell_id = grid->data[index];
-
-        if (cell_id != CELL_IS_EMPTY) {
-          neighbours[count] = cell_id;
-          count+= 1;
-        }
-      }
-    }
-
-    for (uint c = 0; c < count; c++) {
+    for (size_t c = 0; c < neighbours.size; c++) {
       Grid_Cell cell_id = neighbours[c];
 
       assert(cell_id != CELL_IS_EMPTY);
-      Vec2 neighbour = (*array)[cell_id];
+      Vec2 neighbour = (*positions)[cell_id];
 
-      if (check_for_connection(*point, neighbour, radius, L)) {
+      if (check_for_connection(point, neighbour, radius, L)) {
         add_connection_to_graph_node(graph, k, cell_id);
       }
     }
@@ -1462,18 +1436,11 @@ void init_program(int width, int height) {
     // Initialize default input;
     Thread_Data* data = &thread_data;
     data->arena           = &arena;
-    data->particle_radius = 0.1;
-    data->jumping_conductivity_distance = 1.5 * data->particle_radius;
-    data->packing_factor  = 0.5;
+    data->particle_radius = 0.05;
+    data->jumping_conductivity_distance = 0.02;
+    data->packing_factor  = 0.7;
 
     begin_memory_arena(data->arena, MEMORY_ALLOCATION_SIZE);
-
-    size_t junk;
-    do_the_thing(data->arena,
-                 data->particle_radius,
-                 data->jumping_conductivity_distance,
-                 data->packing_factor,
-                 &junk);
   }
 
   { // loading shaders.
