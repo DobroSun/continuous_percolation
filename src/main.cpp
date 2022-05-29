@@ -438,7 +438,11 @@ bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
 }
 
-void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, Cluster_Data* result) {
+template<size_t M>
+void check_circle_touches_boundaries(Vec<M> pos, float radius, uint cluster_size, Cluster_Data* result);
+
+template<>
+void check_circle_touches_boundaries(Vec<2> pos, float radius, uint cluster_size, Cluster_Data* result) {
   float diameter = 2*radius;
 
   bool touches_left  = pos.x <  left_boundary + diameter;
@@ -893,7 +897,8 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const ar
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* positions, bool* hash_table, uint starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
+template<size_t M>
+void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec<M>>* positions, bool* hash_table, uint starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
 
   uint* size = array_add(cluster_sizes);
 
@@ -903,7 +908,7 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* p
   *size = 1;
 
   {
-    Vec2 pos = (*positions)[starting_index];
+    Vec<M> pos = (*positions)[starting_index];
 
     check_circle_touches_boundaries(pos, radius, *size, result);
     array_add(&result->cluster, starting_index);
@@ -927,7 +932,7 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* p
         add_to_queue(queue, new_node_id);
         *size += 1;
 
-        Vec2 pos = (*positions)[new_node_id];
+        Vec<M> pos = (*positions)[new_node_id];
         check_circle_touches_boundaries(pos, radius, *size, result);
         array_add(&result->cluster, new_node_id);
       }
@@ -1398,7 +1403,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
     printf("[..] Finished creating graph in := ");
     measure_scope();
     //naive_collect_points_to_graph(&graph, &positions, radius, L);
-    collect_points_to_graph_via_grid<2>(&graph, &grid, &positions, radius, L);
+    collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
   }
 
 
