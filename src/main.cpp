@@ -242,7 +242,10 @@ struct Cluster_Data {
   bool touches_right = false;
   bool touches_up    = false;
   bool touches_down  = false;
-  size_t cluster_size = 0;
+
+  bool is_percolating_cluster = false;
+
+  array<uint> cluster;
 };
 
 struct Create_Vertex_Buffer {
@@ -299,6 +302,7 @@ struct Basic_Shader_Data {
 
 struct Thread_Data {
   Memory_Arena* arena;
+  Cluster_Data* cluster;
 
   float particle_radius;
   float jumping_conductivity_distance;
@@ -316,6 +320,7 @@ static Basic_Shader_Data basic_shader_data = {};
 static Thread computation_thread = {};
 static Thread_Data thread_data   = {};
 static Memory_Arena arena        = {};
+static Cluster_Data cluster      = {};
 
 static array<Vec2> global_positions = {};
 static Grid2D              global_grid      = {};
@@ -413,7 +418,7 @@ void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, 
   *down  = *down  ? *down  : touches_down;
 
   if (*up && *down || *left && *right) {
-    result->cluster_size = cluster_size;
+    result->is_percolating_cluster = true;
   }
 }
 
@@ -673,18 +678,22 @@ void take_all_neighbours_with_distance(const Grid2D* grid, array<Grid_Cell>* nei
 }
 
 void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, float max_random_walking_distance) {
-  for (size_t n = 0; n < 6; n++) {
-    for (size_t i = 0; i < positions->size; i++) {
+  array<Grid_Cell> neighbours;
+  array<Grid_Cell> intersection;
+  array<double>    intersection_distance;
+  array<double>    distances;
 
-      array<Grid_Cell> neighbours;
-      array<Grid_Cell> intersection;
-      array<double>    intersection_distance;
-      array<double>    distances;
+  defer { array_free(&neighbours); };
+  defer { array_free(&intersection); };
+  defer { array_free(&intersection_distance); };
+  defer { array_free(&distances); };
 
-      defer { array_free(&neighbours); };
-      defer { array_free(&intersection); };
-      defer { array_free(&intersection_distance); };
-      defer { array_free(&distances); };
+  for (size_t i = 0; i < positions->size; i++) {
+    for (size_t n = 0; n < 4; n++) {
+      array_clear(&neighbours);
+      array_clear(&intersection);
+      array_clear(&intersection_distance);
+      array_clear(&distances);
 
       Vec2* point = &(*positions)[i];
 
@@ -752,21 +761,21 @@ void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, flo
       jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
       jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
 
-      uint p = get_circle_id_on_a_grid(grid, *point);
-      uint n = get_circle_id_on_a_grid(grid, jump_to);
+      uint p_id = get_circle_id_on_a_grid(grid, *point);
+      uint n_id = get_circle_id_on_a_grid(grid, jump_to);
 
-      Grid_Cell* previous_id = &grid->data[p];
-      Grid_Cell* next_id     = &grid->data[n];
-      bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
+      Grid_Cell* previous = &grid->data[p_id];
+      Grid_Cell* next     = &grid->data[n_id];
+      bool cell_is_not_occupied = *next == CELL_IS_EMPTY;
       
-      assert(*previous_id == *next_id ? true : cell_is_not_occupied); // if we did a jump, next_id should be empty.
+      assert(*previous == *next ? true : cell_is_not_occupied); // if we did a jump, next_id should be empty.
 
       *point = jump_to;
 
-      if (*previous_id != *next_id) {
-        assert(*next_id == CELL_IS_EMPTY);
-        *next_id     = *previous_id;
-        *previous_id = CELL_IS_EMPTY;
+      if (*previous != *next) {
+        assert(*next == CELL_IS_EMPTY);
+        *next     = *previous;
+        *previous = CELL_IS_EMPTY;
       }
     }
   }
@@ -817,7 +826,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const ar
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
+void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* positions, bool* hash_table, uint starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
 
   uint* size = array_add(cluster_sizes);
 
@@ -828,7 +837,9 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* p
 
   {
     Vec2 pos = (*positions)[starting_index];
+
     check_circle_touches_boundaries(pos, radius, *size, result);
+    array_add(&result->cluster, starting_index);
   }
 
   while (!is_queue_empty(queue)) {
@@ -841,7 +852,9 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* p
       uint new_node_id = nodes_to_search[i];
 
       if (hash_table[new_node_id]) {
+        // 
         // the node is already in a queue, we will process it anyway.
+        //
       } else {
         hash_table[new_node_id] = true;
         add_to_queue(queue, new_node_id);
@@ -849,11 +862,28 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* p
 
         Vec2 pos = (*positions)[new_node_id];
         check_circle_touches_boundaries(pos, radius, *size, result);
+        array_add(&result->cluster, new_node_id);
       }
     }
   }
 }
 
+void copy_cluster_data(Cluster_Data* a, const Cluster_Data* b) {
+  array<uint> reference = a->cluster;
+
+  *a = *b;
+
+  array_copy(&reference, &b->cluster);
+  a->cluster = reference;
+}
+
+void clear_cluster_data(Cluster_Data* a) {
+  array<uint> reference = a->cluster;
+  array_clear(&reference);
+
+  *a = {};
+  a->cluster = reference;
+}
 
 
 
@@ -1215,9 +1245,10 @@ void basic_shader_uniform(void* data) {
 }
 
 
-void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
+void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
 
+  clear_cluster_data(cluster);
   reset_memory_arena(arena);
 
   array<Vec2> positions = {};
@@ -1304,23 +1335,20 @@ void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_fact
   }
 
 
+  Memory_Arena temp;
+  begin_memory_arena(&temp, MB(200));
+
   array<uint> cluster_sizes;
-  defer { array_free(&cluster_sizes); };
+  cluster_sizes.allocator = temp.allocator;
 
-  bool* hash_table = (bool*) malloc(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
-
-  defer { free(hash_table); };
+  bool* hash_table = (bool*) alloc(temp.allocator, sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
   memset(hash_table, false, sizeof(bool) * N);
 
   Queue queue;
-  queue.data     = (uint*) malloc(sizeof(uint) * N);
+  queue.data     = (uint*) alloc(temp.allocator, sizeof(uint) * N);
   queue.first    = 0;
   queue.last     = 0;
   queue.max_size = N;
-
-  defer { free(queue.data); };
-
-  Cluster_Data percolation;
 
   {
     printf("[..]\n");
@@ -1330,23 +1358,23 @@ void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_fact
 
     for (size_t i = 0; i < graph.count; i++) {
       if (!hash_table[i]) {
+
         Cluster_Data result;
+        result.cluster.allocator = temp.allocator;
 
         breadth_first_search(&graph, &queue, &positions, hash_table, i, radius, &cluster_sizes, &result);
 
-        bool found_larger_cluster = result.cluster_size > percolation.cluster_size;
-        percolation = found_larger_cluster ? result : percolation;
+        bool larger_cluster      = result.cluster.size > cluster->cluster.size;
+        bool percolating_cluster = result.is_percolating_cluster;
+        if (larger_cluster || percolating_cluster) {
+          copy_cluster_data(cluster, &result);
+        }
       }
     }
   }
   //assert(check_hash_table_is_filled_up(hash_table, N));
 
-  uint max_size = cluster_sizes[0];
-  for (size_t i = 0; i < cluster_sizes.size; i++) {
-    max_size = cluster_sizes[i] > max_size ? cluster_sizes[i] : max_size;
-  }
-
-  *largest_cluster_size = max_size;
+  *largest_cluster_size = cluster->cluster.size;
 
   global_positions = positions;
   global_grid      = grid;
@@ -1354,10 +1382,9 @@ void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_fact
 
   {
     printf("[..]\n");
-    printf("[..] l := %d, r := %d, u := %d, d := %d\n", percolation.touches_left, percolation.touches_right, percolation.touches_up, percolation.touches_down);
-    printf("[..] Percolating cluster size := %zu\n",  percolation.cluster_size);
-    printf("[..] Largest cluster size     := %u\n",  max_size);
-    printf("[..] Number of clusters       := %zu\n", cluster_sizes.size);
+    printf("[..] Is percolating cluster := %s\n",    cluster->is_percolating_cluster ? "true" : "false");
+    printf("[..] Largest cluster size   := %zu\n",   cluster->cluster.size);
+    printf("[..] Number of clusters found := %zu\n", cluster_sizes.size);
     printf("[..] Cluster sizes := [");
     for (size_t i = 0; i < cluster_sizes.size; i++) {
       printf("%lu%s", cluster_sizes[i], (i == cluster_sizes.size-1) ? "]\n" : ", ");
@@ -1366,6 +1393,9 @@ void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_fact
     puts("");
     puts("");
   }
+
+  end_memory_arena(&temp);
+
 }
 
 static int computation_thread_proc(void* param) {
@@ -1373,6 +1403,7 @@ static int computation_thread_proc(void* param) {
 
   size_t largest_cluster_size;
   do_the_thing(data.arena,
+               data.cluster,
                data.particle_radius,
                data.jumping_conductivity_distance,
                data.packing_factor,
@@ -1386,6 +1417,7 @@ static int computation_thread_proc(void* param) {
   return 0;
 }
 
+#if 0
 void abstract_the_thing(glm::vec2* positions, size_t positions_count, glm::vec2* source_vertex, size_t source_vertex_count, uint* source_index, size_t source_index_count, glm::vec2* out_vertex, size_t* out_vertex_count, uint* out_index, size_t* out_index_count) {
 
   for (size_t i = 0; i < positions_count; i++) {
@@ -1415,6 +1447,7 @@ void make_grid_positions(const Grid2D* grid, glm::vec2* grid_vertices) {
     }
   }
 }
+#endif
 
 void init_program(int width, int height) {
   init_filesystem_api();
@@ -1436,6 +1469,7 @@ void init_program(int width, int height) {
     // Initialize default input;
     Thread_Data* data = &thread_data;
     data->arena           = &arena;
+    data->cluster         = &cluster;
     data->particle_radius = 0.05;
     data->jumping_conductivity_distance = 0.02;
     data->packing_factor  = 0.7;
@@ -1659,6 +1693,7 @@ void init_program(int width, int height) {
 
 void deinit_program() {
   end_memory_arena(thread_data.arena);
+  array_free(&cluster.cluster);
 }
 
 void draw_triangle() {
@@ -1669,7 +1704,7 @@ void draw_triangle() {
   glEnd();
 }
 
-void draw_circle(glm::vec2 position, glm::vec2 size) {
+void draw_circle(glm::vec2 position, glm::vec2 size, glm::vec3 color) {
   size_t N = static_array_size(circles_vertices_data);
 
   glm::mat4 matrix = glm::translate(glm::mat4(1), glm::vec3(position, 0)) * glm::scale(glm::mat4(1), { size.x, size.y, 1.0f });
@@ -1685,6 +1720,7 @@ void draw_circle(glm::vec2 position, glm::vec2 size) {
     v = matrix * v;
 
     glVertex2f(v.x, v.y);
+    // glColor3f(color.r, color.g, color.b);
 
     v.x = circles_vertices_data[i+2];
     v.y = circles_vertices_data[i+3];
@@ -1693,7 +1729,10 @@ void draw_circle(glm::vec2 position, glm::vec2 size) {
 
     v = matrix * v;
 
-    if (i < N-2) glVertex2f(v.x, v.y);
+    if (i < N-2) {
+      glVertex2f(v.x, v.y);
+      // glColor3f(color.r, color.g, color.b);
+    }
   }
   glEnd();
 }
@@ -1715,11 +1754,18 @@ void draw_grid() {
 }
 
 void draw_circles(Thread_Data* data) {
-  size_t N = global_positions.size;
+  uint N = global_positions.size;
 
-  for (size_t i = 0; i < N; i++) {
+  glm::vec3 red   = glm::vec3(1, 0, 0);
+  glm::vec3 green = glm::vec3(0, 1, 0);
+
+  for (uint i = 0; i < N; i++) {
     Vec2 v = global_positions[i];
-    draw_circle(glm::vec2(v.x, v.y), glm::vec2(data->particle_radius, data->particle_radius));
+
+    uint*     found = array_find(&data->cluster->cluster, i);
+    glm::vec3 color = found ? green : red;
+
+    draw_circle(glm::vec2(v.x, v.y), glm::vec2(data->particle_radius, data->particle_radius), color);
   }
 }
 
