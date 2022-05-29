@@ -223,9 +223,20 @@ bool line_and_circle_intersection(Line<M> a, Circle<M> b, double* distance) {
 }
 
 
-struct Grid_Position {
+template<size_t M>
+struct Grid_Positionss;
+
+template<>
+struct Grid_Positionss<2> {
   uint i, j;
 };
+
+template<>
+struct Grid_Positionss<3> {
+  uint i, j, k;
+};
+
+typedef Grid_Positionss<2> Grid_Position;
 
 typedef uint Grid_Cell;
 struct Grid2D {
@@ -394,7 +405,8 @@ void add_connection_to_graph_node(Graph* graph, uint target_node, uint connected
   graph->graph_data++;
 }
 
-Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
+template<size_t M>
+Grid_Positionss<M> get_circle_position_on_a_grid(const Grid2D* grid, Vec<M> point) {
   float x = point.x - left_boundary;
   float y = point.y - lower_boundary;
 
@@ -404,8 +416,12 @@ Grid_Position get_circle_position_on_a_grid(const Grid2D* grid, Vec2 point) {
   return { i, j };
 }
 
-uint get_circle_id_on_a_grid(const Grid2D* grid, Vec2 point) {
-  Grid_Position pos = get_circle_position_on_a_grid(grid, point);
+template<size_t M>
+uint get_circle_id_on_a_grid(const Grid2D* grid, Vec<M> point);
+
+template<>
+uint get_circle_id_on_a_grid<2>(const Grid2D* grid, Vec<2> point) {
+  Grid_Positionss<2> pos = get_circle_position_on_a_grid(grid, point);
 
   return pos.i * grid->number_of_cells_per_dimension + pos.j;
 }
@@ -615,7 +631,11 @@ void poisson_disk_sampling(array<Vec2>* out, size_t N, float radius) {
   }
 }
 
-void tightest_packing_sampling(array<Vec2>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
+template<size_t M>
+void tightest_packing_sampling(array<Vec<M>>* array, float* max_random_walking_distance, float target_radius, float packing_factor);
+
+template<>
+void tightest_packing_sampling<2>(array<Vec<2>>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
   assert(array->size == 0);
 
   // target_radius^2 -- packing_factor.
@@ -647,9 +667,10 @@ void tightest_packing_sampling(array<Vec2>* array, float* max_random_walking_dis
   }
 }
 
-void create_square_grid(Grid2D* grid, array<Vec2>* positions) {
+template<size_t M>
+void create_square_grid(Grid2D* grid, array<Vec<M>>* positions) {
   for (size_t k = 0; k < positions->size; k++) {
-    Vec2* point = &(*positions)[k];
+    Vec<M>* point = &(*positions)[k];
 
     uint n = get_circle_id_on_a_grid(grid, *point);
 
