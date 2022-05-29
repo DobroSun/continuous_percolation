@@ -5,9 +5,8 @@
 #include "../std/pch.h"
 
 
-const uint NUMBER_OF_NEIGHBOURS = 32; // @Incomplete: actually this number should depend on L value.
 const uint CELL_IS_EMPTY = 0xFFFFFFFF;
-const size_t MEMORY_ALLOCATION_SIZE = 1e6; //1e10;  // ~ 10 gigabytes.
+const size_t MEMORY_ALLOCATION_SIZE = 1e10; // ~ 10 gigabytes.
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
@@ -299,7 +298,7 @@ struct Basic_Shader_Data {
 };
 
 struct Thread_Data {
-  void* memory;
+  Memory_Arena* arena;
 
   float particle_radius;
   float jumping_conductivity_distance;
@@ -316,8 +315,9 @@ static Basic_Shader_Data basic_shader_data = {};
 
 static Thread computation_thread = {};
 static Thread_Data thread_data   = {};
+static Memory_Arena arena        = {};
 
-static dynamic_array<Vec2> global_positions = {};
+static array<Vec2> global_positions = {};
 static Grid2D              global_grid      = {};
 static Graph               global_graph     = {};
 
@@ -417,7 +417,7 @@ void check_circle_touches_boundaries(Vec2 pos, float radius, uint cluster_size, 
   }
 }
 
-bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
+bool check_circles_are_inside_a_box(array<Vec2>* array, float radius) {
   for (size_t i = 0; i < array->size; i++) {
     Vec2 v = (*array)[i];
 
@@ -430,7 +430,7 @@ bool check_circles_are_inside_a_box(dynamic_array<Vec2>* array, float radius) {
   return true;
 }
 
-bool check_circles_do_not_intersect_each_other(dynamic_array<Vec2>* array, float radius) {
+bool check_circles_do_not_intersect_each_other(array<Vec2>* array, float radius) {
   const float min_distance_between_nodes = square(radius + radius);
 
   for (size_t i = 0; i < array->size; i++) {
@@ -503,7 +503,7 @@ regenerate:
   return Vec2 { x, y };
 }
 
-void naive_random_sampling(dynamic_array<Vec2>* array, float radius) {
+void naive_random_sampling(array<Vec2>* array, float radius) {
   const int       MAX_ALLOWED_ITERATIONS = 1e3;
   const float min_distance_between_nodes = (2 * radius) * (2 * radius);
 
@@ -540,11 +540,11 @@ void naive_random_sampling(dynamic_array<Vec2>* array, float radius) {
   }
 }
 
-void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
+void poisson_disk_sampling(array<Vec2>* out, size_t N, float radius) {
   const float min_radius = 2 * radius;
   const float min_distance_between_nodes = min_radius * min_radius;
 
-  dynamic_array<Vec2> active_points;
+  array<Vec2> active_points;
   defer { array_free(&active_points); };
 
   array_reserve(&active_points, N);
@@ -562,8 +562,8 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
       Vec2 possible_point = generate_random_vec2_around_a_point(active_point, radius, min_radius, min_radius);
 
       bool allow_new_point = true;
-      for (size_t j = 0; j < array->size; j++) {
-        Vec2 already_a_point = (*array)[j];
+      for (size_t j = 0; j < out->size; j++) {
+        Vec2 already_a_point = (*out)[j];
 
         float distance = distance_squared(possible_point, already_a_point);
         if (distance < min_distance_between_nodes) {
@@ -574,7 +574,7 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
 
       if (allow_new_point) {
         cursor++;
-        array_add(array,          possible_point);
+        array_add(out,            possible_point);
         array_add(&active_points, possible_point);
         found_something = true;
         break;
@@ -587,7 +587,7 @@ void poisson_disk_sampling(dynamic_array<Vec2>* array, size_t N, float radius) {
   }
 }
 
-void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
+void tightest_packing_sampling(array<Vec2>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
   assert(array->size == 0);
 
   // target_radius^2 -- packing_factor.
@@ -619,7 +619,7 @@ void tightest_packing_sampling(dynamic_array<Vec2>* array, float* max_random_wal
   }
 }
 
-void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
+void create_square_grid(Grid2D* grid, array<Vec2>* positions) {
   for (size_t k = 0; k < positions->size; k++) {
     Vec2* point = &(*positions)[k];
 
@@ -631,7 +631,7 @@ void create_square_grid(Grid2D* grid, dynamic_array<Vec2>* positions) {
 }
 
 
-void take_all_neighbours_with_distance(Grid2D* grid, dynamic_array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
+void take_all_neighbours_with_distance(Grid2D* grid, array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
 
   Vec2 new_point = point + Vec2{ distance, distance };
 
@@ -642,7 +642,7 @@ void take_all_neighbours_with_distance(Grid2D* grid, dynamic_array<Grid_Cell>* n
   size_t di = abs((int64)n.i - (int64)p.i);
   size_t dj = abs((int64)n.j - (int64)p.j);
 
-  size_t delta = max(di, dj);
+  size_t delta = max(di, dj) + 1;
 
 
   // 
@@ -672,139 +672,95 @@ void take_all_neighbours_with_distance(Grid2D* grid, dynamic_array<Grid_Cell>* n
   }
 }
 
-void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float radius, float max_random_walking_distance) {
-#if 0
-  dynamic_array<Grid_Cell> neighbours;
-  dynamic_array<Grid_Cell> intersection;
-  dynamic_array<double>    intersection_distance;
-  dynamic_array<double>    distances;
+void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, float max_random_walking_distance) {
+  for (size_t n = 0; n < 6; n++) {
+    for (size_t i = 0; i < positions->size; i++) {
 
-  defer { array_free(&neighbours); };
-  defer { array_free(&intersection); };
-  defer { array_free(&intersection_distance); };
-  defer { array_free(&distances); };
+      array<Grid_Cell> neighbours;
+      array<Grid_Cell> intersection;
+      array<double>    intersection_distance;
+      array<double>    distances;
 
-  for (size_t i = 0; i < positions->size; i++) {
-    Vec2* point = &(*positions)[i];
+      defer { array_free(&neighbours); };
+      defer { array_free(&intersection); };
+      defer { array_free(&intersection_distance); };
+      defer { array_free(&distances); };
 
-    // find all neighbours.
-    take_all_neighbours_with_distance(grid, &neighbours, *point, radius, max_random_walking_distance);
+      Vec2* point = &(*positions)[i];
 
-    // 
-    // now we should find the one that is in our way.
-    // in order to do that, we should know the direction to move in.
-    //
+      // find all neighbours.
+      take_all_neighbours_with_distance(grid, &neighbours, *point, radius, max_random_walking_distance);
 
-    double    direction = generate_random_double_in_range(0, TAU);
-    Vec2 unit_direction = { cos(direction), sin(direction) };
+      // 
+      // now we should find the one that is in our way.
+      // in order to do that, we should know the direction to move in.
+      //
 
-    Line a;
-    a.origin    = *point;
-    a.direction = unit_direction;
+      double    direction = generate_random_double_in_range(0, TAU);
+      Vec2 unit_direction = { cos(direction), sin(direction) };
 
-    // find all circles that are intersecting unit_direction.
-    for (size_t k = 0; k < neighbours.size; k++) {
-      Grid_Cell cell = neighbours[k];
-      Vec2*   origin = &(*positions)[cell];
+      Line a;
+      a.origin    = *point;
+      a.direction = unit_direction;
 
-      Circle b;
-      b.origin = *origin;
-      b.radius = 2*radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
+      // find all circles that are intersecting unit_direction.
+      for (size_t k = 0; k < neighbours.size; k++) {
+        Grid_Cell cell = neighbours[k];
+        Vec2*   origin = &(*positions)[cell];
 
-      double distance;
+        Circle b;
+        b.origin = *origin;
+        b.radius = radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
 
-      if (dot(b.origin - a.origin, a.direction) > 0) { // in the same direction.
-        if (line_and_circle_intersection(a, b, &distance)) {
-          array_add(&intersection,          cell);
-          array_add(&intersection_distance, distance);
+        double distance;
+
+        if (dot(b.origin - a.origin, a.direction) > 0) { // in the same direction.
+          if (line_and_circle_intersection(a, b, &distance)) {
+            array_add(&intersection,          cell);
+            array_add(&intersection_distance, distance);
+          }
         }
       }
-    }
 
-    // find all min distances that we can put circle to.
-    for (size_t k = 0; k < intersection.size; k++) {
-      Grid_Cell cell = intersection[k];
-      Vec2*   origin = &(*positions)[cell];
+      // find all min distances that we can put circle to.
+      for (size_t k = 0; k < intersection.size; k++) {
+        Grid_Cell cell = intersection[k];
+        Vec2*   origin = &(*positions)[cell];
 
-      double p = intersection_distance[k];
-      double l = 2*radius;
+        double p = intersection_distance[k];
+        double l = 2*radius;
 
-      double delta = sqrt(l*l - p*p);
-      assert(0 <= delta && delta < 2*radius);
+        double delta = sqrt(l*l - p*p);
+        assert(0 <= delta && delta <= 2*radius);
 
-      double  d = sqrt(length_sq(*origin - a.origin) - p*p);
-      double rd = d - delta;
-      array_add(&distances, rd);
-    }
+        double  d = sqrt(length_sq(*origin - a.origin) - p*p);
+        double rd = d - delta;
+        array_add(&distances, rd);
+      }
 
-    // find min distance.
-    double min_dist = max_random_walking_distance;
-    for (size_t k = 0; k < distances.size; k++) {
-      min_dist = min(min_dist, distances[k]);
-    }
+      // find min distance.
+      double min_dist = max_random_walking_distance;
+      for (size_t k = 0; k < distances.size; k++) {
+        min_dist = min(min_dist, distances[k]);
+      }
 
-    printf("%g : %g\n", min_dist, max_random_walking_distance);
+      double min_d = min(0, min_dist);
+      double max_d = max(0, min_dist);
+      double distance = generate_random_double_in_range(min_d, max_d);
+      Vec2    jump_to = *point + distance*unit_direction;
 
-    double distance = generate_random_double_in_range(0, min_dist);
-    Vec2    jump_to = *point + distance*unit_direction;
+      jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
+      jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
 
-    jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
-    jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
+      uint p = get_circle_id_on_a_grid(grid, *point);
+      uint n = get_circle_id_on_a_grid(grid, jump_to);
 
-    uint p = get_circle_id_on_a_grid(grid, *point);
-    uint n = get_circle_id_on_a_grid(grid, jump_to);
+      Grid_Cell* previous_id = &grid->data[p];
+      Grid_Cell* next_id     = &grid->data[n];
+      bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
+      
+      assert(*previous_id == *next_id ? true : cell_is_not_occupied); // if we did a jump, next_id should be empty.
 
-    Grid_Cell* previous_id = &grid->data[p];
-    Grid_Cell* next_id     = &grid->data[n];
-    bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
-    
-    assert(*previous_id == *next_id ? true : cell_is_not_occupied); // if we did a jump, next_id should be empty.
-
-    *point = jump_to;
-
-    if (*previous_id != *next_id) {
-      assert(*next_id == CELL_IS_EMPTY);
-      *next_id     = *previous_id;
-      *previous_id = CELL_IS_EMPTY;
-    }
-  }
-#else
-  uint count = 0;
-  Grid_Cell neighbours[NUMBER_OF_NEIGHBOURS];
-
-  for (size_t i = 0; i < positions->size; i++) {
-    Vec2* point = &(*positions)[i];
-
-    float     distance  = max_random_walking_distance;
-    float     direction = TAU * rand() / (float)(RAND_MAX+1);    
-    Vec2 unit_direction = { cos(direction), sin(direction) };
-
-    assert(0 <= direction && direction < TAU);
-
-    Vec2 jump_to;
-
-    int iteraction_counter = 0;
-
-  jump:
-    iteraction_counter++;
-    if (iteraction_counter > 6) { // @Incomplete: think about it later.
-      continue;
-    }
-
-    jump_to = *point + distance*unit_direction;
-
-    jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
-    jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
-
-
-    uint p = get_circle_id_on_a_grid(grid, *point);
-    uint n = get_circle_id_on_a_grid(grid, jump_to);
-
-    Grid_Cell* previous_id = &grid->data[p];
-    Grid_Cell* next_id     = &grid->data[n];
-    bool cell_is_not_occupied = *next_id == CELL_IS_EMPTY;
-    
-    if (cell_is_not_occupied) {
       *point = jump_to;
 
       if (*previous_id != *next_id) {
@@ -812,16 +768,12 @@ void process_random_walk(Grid2D* grid, dynamic_array<Vec2>* positions, float rad
         *next_id     = *previous_id;
         *previous_id = CELL_IS_EMPTY;
       }
-    } else {
-      distance /= 2.0f; // @Incomplete: we should probably do rand() again, not just ... /= 2.0f.
-      goto jump;
     }
   }
-#endif
 }
 
 
-void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* array, float radius, float L) {
+void naive_collect_points_to_graph(Graph* graph, const array<Vec2>* array, float radius, float L) {
   const size_t N = graph->count;
 
   assert(array->size == N);
@@ -839,7 +791,7 @@ void naive_collect_points_to_graph(Graph* graph, const dynamic_array<Vec2>* arra
   }
 }
 
-void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dynamic_array<Vec2>* array, float radius, float L) {
+void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const array<Vec2>* array, float radius, float L) {
   assert(array->size == graph->count);
 
   size_t width = grid->number_of_cells_per_dimension;
@@ -891,7 +843,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const dy
   }
 }
 
-void breadth_first_search(const Graph* graph, Queue* queue, const dynamic_array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, dynamic_array<uint>* cluster_sizes, Cluster_Data* result) {
+void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec2>* positions, bool* hash_table, size_t starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
 
   uint* size = array_add(cluster_sizes);
 
@@ -1289,13 +1241,13 @@ void basic_shader_uniform(void* data) {
 }
 
 
-void do_the_thing(void* memory, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
+void do_the_thing(Memory_Arena* arena, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
 
-  dynamic_array<Vec2> positions;
-  positions.data = (Vec2*) memory;
-  positions.size = 0;
-  positions.capacity = MEMORY_ALLOCATION_SIZE;
+  reset_memory_arena(arena);
+
+  array<Vec2> positions = {};
+  positions.allocator = arena->allocator;
 
   {
     printf("[..] Generating nodes ... \n");
@@ -1327,13 +1279,11 @@ void do_the_thing(void* memory, float radius, float L, float packing_factor, siz
   //assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
 
 
-  memory = (uint8*)positions.data + N * sizeof(*positions.data);
-
   Grid2D grid; 
   grid.cell_size                     = sqrt(2)*radius;
   grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
   grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
-  grid.data                          = (Grid_Cell*) memory;
+  grid.data                          = (Grid_Cell*) alloc(arena->allocator, sizeof(*grid.data) * grid.number_of_cells);
 
   memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
 
@@ -1358,14 +1308,12 @@ void do_the_thing(void* memory, float radius, float L, float packing_factor, siz
     measure_scope();
     process_random_walk(&grid, &positions, radius, max_random_walking_distance);
   }
-  assert(check_circles_are_inside_a_box(&positions, radius));
-  assert(check_circles_do_not_intersect_each_other(&positions, radius));
-
-  memory = (uint8*)grid.data + grid.number_of_cells * sizeof(*grid.data);
+  //assert(check_circles_are_inside_a_box(&positions, radius));
+  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
   Graph graph;
   graph.count = N;
-  graph.connected_nodes_count = (uint8*) memory;
+  graph.connected_nodes_count = (uint8*) alloc(arena->allocator, sizeof(uint8) * (arena->allocated - arena->top)); // allocate to max capacity.
   graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
   graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
 
@@ -1382,9 +1330,7 @@ void do_the_thing(void* memory, float radius, float L, float packing_factor, siz
   }
 
 
-  // @Incomplete: maybe we also want to use memory arena for cluster_sizes, hash_table and queue.
-
-  dynamic_array<uint> cluster_sizes;
+  array<uint> cluster_sizes;
   defer { array_free(&cluster_sizes); };
 
   bool* hash_table = (bool*) malloc(sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
@@ -1452,7 +1398,7 @@ static int computation_thread_proc(void* param) {
   Thread_Data data = *(Thread_Data*) param;
 
   size_t largest_cluster_size;
-  do_the_thing(data.memory,
+  do_the_thing(data.arena,
                data.particle_radius,
                data.jumping_conductivity_distance,
                data.packing_factor,
@@ -1511,21 +1457,25 @@ void init_program(int width, int height) {
     uint seed = time(NULL);
     srand(seed);
   }
+
   {
     // Initialize default input;
     Thread_Data* data = &thread_data;
-    data->memory = malloc(MEMORY_ALLOCATION_SIZE); // @Incomplete: just use a memory arena, it's going to be way safer.
+    data->arena           = &arena;
     data->particle_radius = 0.1;
     data->jumping_conductivity_distance = 1.5 * data->particle_radius;
-    data->packing_factor = 0.5;
+    data->packing_factor  = 0.5;
+
+    begin_memory_arena(data->arena, MEMORY_ALLOCATION_SIZE);
 
     size_t junk;
-    do_the_thing(data->memory,
+    do_the_thing(data->arena,
                  data->particle_radius,
                  data->jumping_conductivity_distance,
                  data->packing_factor,
                  &junk);
   }
+
   { // loading shaders.
     Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
     basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
@@ -1741,7 +1691,7 @@ void init_program(int width, int height) {
 }
 
 void deinit_program() {
-  free(thread_data.memory);
+  end_memory_arena(thread_data.arena);
 }
 
 void draw_triangle() {
