@@ -8,6 +8,9 @@
 const uint CELL_IS_EMPTY = 0xFFFFFFFF;
 const size_t MEMORY_ALLOCATION_SIZE = 1e10; // ~ 10 gigabytes.
 
+
+static const size_t DIM = 3;
+
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
 const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
@@ -16,6 +19,8 @@ const float  left_boundary = -1.0f;
 const float right_boundary =  1.0f;
 const float lower_boundary = -1.0f;
 const float upper_boundary =  1.0f;
+const float near_boundary  = -1.0f;
+const float far_boundary   =  1.0f;
 
 
 const float lines_vertices_data[] = {
@@ -210,6 +215,11 @@ double dot<2>(Vec<2> a, Vec<2> b) {
   return a.x * b.x + a.y * b.y;
 }
 
+template<>
+double dot<3>(Vec<3> a, Vec<3> b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
 template<size_t M>
 double length_sq(Vec<M> a) {
   return dot(a, a);
@@ -283,11 +293,29 @@ struct Queue {
   uint max_size;
 };
 
-struct Cluster_Data {
+template<size_t M>
+struct Cluster_Data;
+
+template<>
+struct Cluster_Data<2> {
   bool touches_left  = false;
   bool touches_right = false;
   bool touches_up    = false;
   bool touches_down  = false;
+
+  bool is_percolating_cluster = false;
+
+  array<uint> cluster;
+};
+
+template<>
+struct Cluster_Data<3> {
+  bool touches_left  = false;
+  bool touches_right = false;
+  bool touches_up    = false;
+  bool touches_down  = false;
+  bool touches_near  = false;
+  bool touches_far   = false;
 
   bool is_percolating_cluster = false;
 
@@ -347,8 +375,8 @@ struct Basic_Shader_Data {
 };
 
 struct Thread_Data {
-  Memory_Arena* arena;
-  Cluster_Data* cluster;
+  Memory_Arena*      arena;
+  Cluster_Data<DIM>* cluster;
 
   float particle_radius;
   float jumping_conductivity_distance;
@@ -366,9 +394,7 @@ static Basic_Shader_Data basic_shader_data = {};
 static Thread computation_thread = {};
 static Thread_Data thread_data   = {};
 static Memory_Arena arena        = {};
-static Cluster_Data cluster      = {};
-
-static const size_t DIM = 3;
+static Cluster_Data<DIM> cluster      = {};
 
 static array<Vec<DIM>> global_positions = {};
 static Grid2D          global_grid      = {};
@@ -420,7 +446,10 @@ void add_connection_to_graph_node(Graph* graph, uint target_node, uint connected
 }
 
 template<size_t M>
-Grid_Positionss<M> get_circle_position_on_a_grid(const Grid2D* grid, Vec<M> point) {
+Grid_Positionss<M> get_circle_position_on_a_grid(const Grid2D* grid, Vec<M> point);
+
+template<>
+Grid_Positionss<2> get_circle_position_on_a_grid(const Grid2D* grid, Vec<2> point) {
   float x = point.x - left_boundary;
   float y = point.y - lower_boundary;
 
@@ -428,6 +457,19 @@ Grid_Positionss<M> get_circle_position_on_a_grid(const Grid2D* grid, Vec<M> poin
   uint j = y / grid->cell_size;
 
   return { i, j };
+}
+
+template<>
+Grid_Positionss<3> get_circle_position_on_a_grid(const Grid2D* grid, Vec<3> point) {
+  float x = point.x - left_boundary;
+  float y = point.y - lower_boundary;
+  float z = point.z - near_boundary;
+
+  uint i = x / grid->cell_size;
+  uint j = y / grid->cell_size;
+  uint k = z / grid->cell_size;
+
+  return { i, j, k };
 }
 
 template<size_t M>
@@ -439,6 +481,14 @@ uint get_circle_id_on_a_grid<2>(const Grid2D* grid, Vec<2> point) {
 
   return pos.i * grid->number_of_cells_per_dimension + pos.j;
 }
+
+template<>
+uint get_circle_id_on_a_grid<3>(const Grid2D* grid, Vec<3> point) {
+  Grid_Positionss<3> pos = get_circle_position_on_a_grid(grid, point);
+
+  return pos.k * square(grid->number_of_cells_per_dimension) + pos.i * grid->number_of_cells_per_dimension + pos.j;
+}
+
 
 
 template<size_t M>
@@ -452,10 +502,10 @@ bool check_for_connection(Vec<M> a, Vec<M> b, float radius, float L) {
 }
 
 template<size_t M>
-void check_circle_touches_boundaries(Vec<M> pos, float radius, uint cluster_size, Cluster_Data* result);
+void check_circle_touches_boundaries(Vec<M> pos, float radius, uint cluster_size, Cluster_Data<M>* result);
 
 template<>
-void check_circle_touches_boundaries(Vec<2> pos, float radius, uint cluster_size, Cluster_Data* result) {
+void check_circle_touches_boundaries(Vec<2> pos, float radius, uint cluster_size, Cluster_Data<2>* result) {
   float diameter = 2*radius;
 
   bool touches_left  = pos.x <  left_boundary + diameter;
@@ -477,6 +527,37 @@ void check_circle_touches_boundaries(Vec<2> pos, float radius, uint cluster_size
     result->is_percolating_cluster = true;
   }
 }
+
+template<>
+void check_circle_touches_boundaries(Vec<3> pos, float radius, uint cluster_size, Cluster_Data<3>* result) {
+  float diameter = 2*radius;
+
+  bool touches_left  = pos.x <  left_boundary + diameter;
+  bool touches_right = pos.x > right_boundary - diameter;
+  bool touches_up    = pos.y < lower_boundary + diameter;
+  bool touches_down  = pos.y > upper_boundary - diameter;
+  bool touches_near  = pos.z <  near_boundary + diameter;
+  bool touches_far   = pos.z >   far_boundary - diameter;
+
+  bool* left  = &result->touches_left;
+  bool* right = &result->touches_right;
+  bool* up    = &result->touches_up;
+  bool* down  = &result->touches_down;
+  bool* near_  = &result->touches_near;
+  bool* far_   = &result->touches_far;
+
+  *left  = *left  ? *left  : touches_left;
+  *right = *right ? *right : touches_right;
+  *up    = *up    ? *up    : touches_up;
+  *down  = *down  ? *down  : touches_down;
+  *near_  = *near_  ? *near_  : touches_near;
+  *far_   = *far_   ? *far_   : touches_far;
+
+  if ((*up && *down) || (*left && *right) || (*near_ && *far_)) {
+    result->is_percolating_cluster = true;
+  }
+}
+
 
 bool check_circles_are_inside_a_box(array<Vec2>* array, float radius) {
   for (size_t i = 0; i < array->size; i++) {
@@ -684,6 +765,51 @@ void tightest_packing_sampling<2>(array<Vec<2>>* array, float* max_random_walkin
   }
 }
 
+template<>
+void tightest_packing_sampling<3>(array<Vec<3>>* array, float* max_random_walking_distance, float target_radius, float packing_factor) {
+  assert(array->size == 0);
+
+  // target_radius^2 -- packing_factor.
+  // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
+  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor); // @Incomplete: ?
+  float height = sqrt(3) * radius;
+
+  *max_random_walking_distance = radius - target_radius;
+
+  // centers of a circle.
+  double x;
+  double y;
+  double z;
+
+  bool is_even_x = true;
+  bool is_even_y = true;
+
+  z = near_boundary + radius;
+  while (z < far_boundary - radius) {
+
+    y  = lower_boundary;
+    y += (is_even_y) ? radius : 2*radius;
+
+    while (y < upper_boundary - radius) {
+
+      x  = left_boundary;
+      x += (is_even_x) ? radius : 2*radius;
+
+      while (x < right_boundary - radius) {
+        array_add(array, Vec<3>{ (float) x, (float) y, (float) z});
+        x += 2*radius;
+      }
+
+      y += 2*radius;
+      is_even_x = !is_even_x;
+    }
+
+    z += height;
+    is_even_y = !is_even_y;
+  }
+}
+
+
 template<size_t M>
 void create_square_grid(Grid2D* grid, array<Vec<M>>* positions) {
   for (size_t k = 0; k < positions->size; k++) {
@@ -741,6 +867,54 @@ void take_all_neighbours_with_distance<2>(const Grid2D* grid, array<Grid_Cell>* 
   }
 }
 
+template<>
+void take_all_neighbours_with_distance<3>(const Grid2D* grid, array<Grid_Cell>* neighbours, Vec<3> point, float radius, float distance) {
+  Vec<3> new_point = point + Vec<3>{ distance, distance, distance };
+
+  Grid_Positionss<3> p = get_circle_position_on_a_grid(grid,     point);
+  Grid_Positionss<3> n = get_circle_position_on_a_grid(grid, new_point);
+
+  size_t width = grid->number_of_cells_per_dimension;
+  size_t di = abs((int64)n.i - (int64)p.i);
+  size_t dj = abs((int64)n.j - (int64)p.j);
+  size_t dk = abs((int64)n.k - (int64)p.k);
+
+  size_t delta = max(dk, max(di, dj)) + 1;
+
+
+  // 
+  // now let's just iterate over all of the: possible neighbours. and find those that contain circles.
+  //  
+
+  size_t pks = p.k - delta;
+  size_t pke = p.k + delta;
+
+  size_t pis = p.i - delta;
+  size_t pie = p.i + delta;
+
+  size_t pjs = p.j - delta;
+  size_t pje = p.j + delta;
+
+  for (size_t k = pks; k < pke; k++) {
+    for (size_t i = pis; i < pie; i++) {
+      for (size_t j = pjs; j < pje; j++) {
+
+        if (i >= width || j >= width || k >= width) { continue; }
+        if (i == p.i && j == p.j && k == p.k)       { continue; }
+
+        size_t index = k*square(width) + i*width + j;
+        assert(index < grid->number_of_cells);
+
+        Grid_Cell cell_id = grid->data[index];
+        if (cell_id != CELL_IS_EMPTY) {
+          array_add(neighbours, cell_id);
+        }
+      }
+    }
+  }
+}
+
+
 template<size_t M>
 Vec<M> make_unit_direction();
 
@@ -751,6 +925,15 @@ Vec<2> make_unit_direction<2>() {
   return normalize(Vec<2>{ (float) dir_x, (float) dir_y });
 }
 
+template<>
+Vec<3> make_unit_direction<3>() {
+  double dir_x = generate_random_double_in_range(0, 1);  // @Incomplete: this is not a uniform distribution for an angle.
+  double dir_y = generate_random_double_in_range(0, 1);
+  double dir_z = generate_random_double_in_range(0, 1);
+  return normalize(Vec<3>{ (float) dir_x, (float) dir_y, (float) dir_z });
+}
+
+
 template<size_t M>
 Vec<M> clamp_boundaries(Vec<M> a, double);
 
@@ -758,6 +941,14 @@ template<>
 Vec<2> clamp_boundaries(Vec<2> a, double radius) {
   a.x = clamp(a.x,  left_boundary+radius, right_boundary-radius);
   a.y = clamp(a.y, lower_boundary+radius, upper_boundary-radius);
+  return a;
+}
+
+template<>
+Vec<3> clamp_boundaries(Vec<3> a, double radius) {
+  a.x = clamp(a.x,  left_boundary+radius, right_boundary-radius);
+  a.y = clamp(a.y, lower_boundary+radius, upper_boundary-radius);
+  a.z = clamp(a.z,  near_boundary+radius,   far_boundary-radius);
   return a;
 }
 
@@ -911,7 +1102,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const ar
 }
 
 template<size_t M>
-void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec<M>>* positions, bool* hash_table, uint starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data* result) {
+void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec<M>>* positions, bool* hash_table, uint starting_index, float radius, array<uint>* cluster_sizes, Cluster_Data<M>* result) {
 
   uint* size = array_add(cluster_sizes);
 
@@ -953,7 +1144,8 @@ void breadth_first_search(const Graph* graph, Queue* queue, const array<Vec<M>>*
   }
 }
 
-void copy_cluster_data(Cluster_Data* a, const Cluster_Data* b) {
+template<size_t M>
+void copy_cluster_data(Cluster_Data<M>* a, const Cluster_Data<M>* b) {
   array<uint> reference = a->cluster;
 
   *a = *b;
@@ -962,7 +1154,8 @@ void copy_cluster_data(Cluster_Data* a, const Cluster_Data* b) {
   a->cluster = reference;
 }
 
-void clear_cluster_data(Cluster_Data* a) {
+template<size_t M>
+void clear_cluster_data(Cluster_Data<M>* a) {
   array<uint> reference = a->cluster;
   array_clear(&reference);
 
@@ -1331,7 +1524,7 @@ void basic_shader_uniform(void* data) {
 
 
 template<size_t M>
-void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
+void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
 
   clear_cluster_data(cluster);
@@ -1364,7 +1557,6 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
   printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
   printf("[..] Generated points     := %zu\n", positions.size);
 
-  assert(max_circles_area < max_window_area);
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
   assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069... ( square grid only!!! )
   // assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
@@ -1373,7 +1565,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
   Grid2D grid; 
   grid.cell_size                     = sqrt(2)*radius;
   grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
-  grid.number_of_cells               = square(grid.number_of_cells_per_dimension);
+  grid.number_of_cells               = pow(grid.number_of_cells_per_dimension, M);
   grid.data                          = (Grid_Cell*) alloc(arena->allocator, sizeof(*grid.data) * grid.number_of_cells);
 
   memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
@@ -1444,7 +1636,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
     for (size_t i = 0; i < graph.count; i++) {
       if (!hash_table[i]) {
 
-        Cluster_Data result;
+        Cluster_Data<M> result;
         result.cluster.allocator = temp.allocator;
 
         breadth_first_search(&graph, &queue, &positions, hash_table, i, radius, &cluster_sizes, &result);
