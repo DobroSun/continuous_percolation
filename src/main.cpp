@@ -72,21 +72,29 @@ struct Vertex_And_Fragment_Shader_Sources {
   string fragment;
 };
 
-struct Vec2 {
+template<size_t M>
+struct Vec;
+
+template<>
+struct Vec<2> {
   float x, y;
 };
+
+typedef Vec<2> Vec2;
 
 struct Vec4 {
   float x, y, z, w;
 };
 
+template<size_t M>
 struct Line {
-  Vec2 origin;
-  Vec2  direction;
+  Vec<M> origin;
+  Vec<M> direction;
 };
 
+template<size_t M>
 struct Circle {
-  Vec2 origin;
+  Vec<M> origin;
   float radius;
 };
 
@@ -182,17 +190,32 @@ Vec2 operator*(Vec2 a, float c) { return { c * a.x, c * a.y }; }
 Vec2 operator/(Vec2 a, float c) { return { a.x / c, a.y / c }; }
 Vec2 operator*(float c, Vec2 a) { return a * c; }
 
-double dot(Vec2 a, Vec2 b) {
+template<size_t M>
+double dot(Vec<M> a, Vec<M> b);
+
+template<>
+double dot<2>(Vec<2> a, Vec<2> b) {
   return a.x * b.x + a.y * b.y;
 }
 
-float length_sq(Vec2 a) {
+template<size_t M>
+double length_sq(Vec<M> a) {
   return dot(a, a);
 }
 
-bool line_and_circle_intersection(Line a, Circle b, double* distance) {
-  Vec2 dirr = a.direction;
-  Vec2 diff = a.origin - b.origin;
+template<size_t M>
+double length(Vec<M> a) {
+  return sqrt(dot(a, a));
+}
+template<size_t M>
+Vec<M> normalize(Vec<M> a) {
+  return a / length(a);
+}
+
+template<size_t M>
+bool line_and_circle_intersection(Line<M> a, Circle<M> b, double* distance) {
+  Vec<M> dirr = a.direction;
+  Vec<M> diff = a.origin - b.origin;
 
   float distance_between_circle_origin_and_line = sqrt(length_sq(diff) - length_sq(dot(diff, dirr)/length_sq(dirr) * dirr));
   if (distance) *distance = distance_between_circle_origin_and_line;
@@ -636,9 +659,12 @@ void create_square_grid(Grid2D* grid, array<Vec2>* positions) {
 }
 
 
-void take_all_neighbours_with_distance(const Grid2D* grid, array<Grid_Cell>* neighbours, Vec2 point, float radius, float distance) {
+template<size_t M>
+void take_all_neighbours_with_distance(const Grid2D* grid, array<Grid_Cell>* neighbours, Vec<M> point, float radius, float distance);
 
-  Vec2 new_point = point + Vec2{ distance, distance };
+template<>
+void take_all_neighbours_with_distance<2>(const Grid2D* grid, array<Grid_Cell>* neighbours, Vec<2> point, float radius, float distance) {
+  Vec<2> new_point = point + Vec<2>{ distance, distance };
 
   Grid_Position p = get_circle_position_on_a_grid(grid,     point);
   Grid_Position n = get_circle_position_on_a_grid(grid, new_point);
@@ -677,7 +703,28 @@ void take_all_neighbours_with_distance(const Grid2D* grid, array<Grid_Cell>* nei
   }
 }
 
-void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, float max_random_walking_distance) {
+template<size_t M>
+Vec<M> make_unit_direction();
+
+template<>
+Vec<2> make_unit_direction<2>() {
+  double dir_x = generate_random_double_in_range(0, 1);  // @Incomplete: this is not a uniform distribution for an angle.
+  double dir_y = generate_random_double_in_range(0, 1);
+  return normalize(Vec<2>{ (float) dir_x, (float) dir_y });
+}
+
+template<size_t M>
+Vec<M> clamp_boundaries(Vec<M> a, double);
+
+template<>
+Vec<2> clamp_boundaries(Vec<2> a, double radius) {
+  a.x = clamp(a.x,  left_boundary+radius, right_boundary-radius);
+  a.y = clamp(a.y, lower_boundary+radius, upper_boundary-radius);
+  return a;
+}
+
+template<size_t M>
+void process_random_walk(Grid2D* grid, array<Vec<M>>* positions, float radius, float max_random_walking_distance) {
   array<Grid_Cell> neighbours;
   array<Grid_Cell> intersection;
   array<double>    intersection_distance;
@@ -695,7 +742,7 @@ void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, flo
       array_clear(&intersection_distance);
       array_clear(&distances);
 
-      Vec2* point = &(*positions)[i];
+      Vec<M>* point = &(*positions)[i];
 
       // find all neighbours.
       take_all_neighbours_with_distance(grid, &neighbours, *point, radius, max_random_walking_distance);
@@ -705,19 +752,18 @@ void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, flo
       // in order to do that, we should know the direction to move in.
       //
 
-      double    direction = generate_random_double_in_range(0, TAU);
-      Vec2 unit_direction = { cos(direction), sin(direction) };
+      Vec<M> unit_direction = make_unit_direction<M>();
 
-      Line a;
+      Line<M> a;
       a.origin    = *point;
       a.direction = unit_direction;
 
       // find all circles that are intersecting unit_direction.
       for (size_t k = 0; k < neighbours.size; k++) {
         Grid_Cell cell = neighbours[k];
-        Vec2*   origin = &(*positions)[cell];
+        Vec<M>*   origin = &(*positions)[cell];
 
-        Circle b;
+        Circle<M> b;
         b.origin = *origin;
         b.radius = 2*radius; // because we want to put a circle in there with another radius, not just simple line & circle intersection check.
 
@@ -756,10 +802,9 @@ void process_random_walk(Grid2D* grid, array<Vec2>* positions, float radius, flo
       double min_d = min(0, min_dist);
       double max_d = max(0, min_dist);
       double distance = generate_random_double_in_range(min_d, max_d);
-      Vec2    jump_to = *point + distance*unit_direction;
+      Vec<M>    jump_to = *point + distance*unit_direction;
 
-      jump_to.x = clamp(jump_to.x,  left_boundary+radius, right_boundary-radius);
-      jump_to.y = clamp(jump_to.y, lower_boundary+radius, upper_boundary-radius);
+      jump_to = clamp_boundaries(jump_to, radius);
 
       uint p_id = get_circle_id_on_a_grid(grid, *point);
       uint n_id = get_circle_id_on_a_grid(grid, jump_to);
@@ -800,14 +845,15 @@ void naive_collect_points_to_graph(Graph* graph, const array<Vec2>* array, float
   }
 }
 
-void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const array<Vec2>* positions, float radius, float L) {
+template<size_t M>
+void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const array<Vec<M>>* positions, float radius, float L) {
   assert(positions->size == graph->count);
 
   array<Grid_Cell> neighbours;
   defer { array_free(&neighbours); };
 
   for (size_t k = 0; k < positions->size; k++) {
-    Vec2 point = (*positions)[k];
+    Vec<M> point = (*positions)[k];
 
     array_clear(&neighbours);
     take_all_neighbours_with_distance(grid, &neighbours, point, radius, L);
@@ -1280,8 +1326,8 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
 
   assert(max_circles_area < max_window_area);
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
-  assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069...
-  //assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
+  assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069... ( square grid only!!! )
+  // assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
 
 
   Grid2D grid; 
@@ -1326,12 +1372,11 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, floa
 
   {
     printf("[..]\n");
-    printf("[..] Successfully allocated 10 gigabytes of memory!\n");
     printf("[..] Collecting nodes to graph ... \n");
     printf("[..] Finished creating graph in := ");
     measure_scope();
     //naive_collect_points_to_graph(&graph, &positions, radius, L);
-    collect_points_to_graph_via_grid(&graph, &grid, &positions, radius, L);
+    collect_points_to_graph_via_grid<2>(&graph, &grid, &positions, radius, L);
   }
 
 
@@ -1838,18 +1883,15 @@ void update_and_render(GLFWwindow* window) {
     ImGui::Checkbox("Visual Grid",    &show_visual_grid);
     ImGui::Checkbox("Visual Spheres", &show_visual_spheres);
 
-    ImGui::InputFloat("Particle radius",               &particle_radius,               step, step_fast, format, flags);
-    ImGui::InputFloat("Jumping conductivity distance", &jumping_conductivity_distance, step, step_fast, format, flags);
-    ImGui::InputFloat("Packing factor",                &packing_factor,                step, step_fast, format, flags);
+    ImGui::InputFloat("Particle radius",               &thread_data.particle_radius,               step, step_fast, format, flags);
+    ImGui::InputFloat("Jumping conductivity distance", &thread_data.jumping_conductivity_distance, step, step_fast, format, flags);
+    ImGui::InputFloat("Packing factor",                &thread_data.packing_factor,                step, step_fast, format, flags);
 
     ImGui::Text("Particle radius               := %.3f", particle_radius);
     ImGui::Text("Jumping conductivity distance := %.3f", jumping_conductivity_distance);
     ImGui::Text("Packing factor                := %.3f", packing_factor);
     ImGui::Text("Largest cluster size          := %lu",  result_largest_cluster_size);
-
-    InterlockedExchange((uint*) &thread_data.particle_radius,               *(uint*) &particle_radius);
-    InterlockedExchange((uint*) &thread_data.jumping_conductivity_distance, *(uint*) &jumping_conductivity_distance);
-    InterlockedExchange((uint*) &thread_data.packing_factor,                *(uint*) &packing_factor);
+    ImGui::Text("Is percolating cluster found  := %s",   thread_data.cluster->is_percolating_cluster ? "true" : "false");
 
   
     const char* start_or_continue = thread_is_paused ? "Continue" : "Start";
