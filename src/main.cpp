@@ -1312,13 +1312,14 @@ void basic_shader_uniform(void* data) {
 }
 
 
+template<size_t M>
 void do_the_thing(Memory_Arena* arena, Cluster_Data* cluster, float radius, float L, float packing_factor, size_t* largest_cluster_size) {
   float max_random_walking_distance;
 
   clear_cluster_data(cluster);
   reset_memory_arena(arena);
 
-  array<Vec2> positions = {};
+  array<Vec<M>> positions = {};
   positions.allocator = arena->allocator;
 
   {
@@ -1468,12 +1469,12 @@ static int computation_thread_proc(void* param) {
   Thread_Data data = *(Thread_Data*) param;
 
   size_t largest_cluster_size;
-  do_the_thing(data.arena,
-               data.cluster,
-               data.particle_radius,
-               data.jumping_conductivity_distance,
-               data.packing_factor,
-               &largest_cluster_size);
+  do_the_thing<2>(data.arena,
+                  data.cluster,
+                  data.particle_radius,
+                  data.jumping_conductivity_distance,
+                  data.packing_factor,
+                  &largest_cluster_size);
 
   InterlockedExchange64(&result_largest_cluster_size, (int64) largest_cluster_size);
 
