@@ -80,6 +80,11 @@ struct Vec<2> {
   float x, y;
 };
 
+template<>
+struct Vec<3> {
+  float x, y, z;
+};
+
 typedef Vec<2> Vec2;
 
 struct Vec4 {
@@ -189,6 +194,13 @@ Vec2 operator-(Vec2 a, Vec2 b)  { return { a.x - b.x, a.y - b.y }; }
 Vec2 operator*(Vec2 a, float c) { return { c * a.x, c * a.y }; }
 Vec2 operator/(Vec2 a, float c) { return { a.x / c, a.y / c }; }
 Vec2 operator*(float c, Vec2 a) { return a * c; }
+
+Vec<3> operator+(Vec<3> a, Vec<3> b)  { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
+Vec<3> operator-(Vec<3> a, Vec<3> b)  { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
+Vec<3> operator*(Vec<3> a, float c) { return { c * a.x, c * a.y, c * a.z }; }
+Vec<3> operator/(Vec<3> a, float c) { return { a.x / c, a.y / c, a.z / c }; }
+Vec<3> operator*(float c, Vec<3> a) { return a * c; }
+
 
 template<size_t M>
 double dot(Vec<M> a, Vec<M> b);
@@ -356,9 +368,11 @@ static Thread_Data thread_data   = {};
 static Memory_Arena arena        = {};
 static Cluster_Data cluster      = {};
 
-static array<Vec2> global_positions = {};
-static Grid2D              global_grid      = {};
-static Graph               global_graph     = {};
+static const size_t DIM = 3;
+
+static array<Vec<DIM>> global_positions = {};
+static Grid2D          global_grid      = {};
+static Graph           global_graph     = {};
 
 static int64  result_largest_cluster_size = 0;
 
@@ -426,15 +440,14 @@ uint get_circle_id_on_a_grid<2>(const Grid2D* grid, Vec<2> point) {
   return pos.i * grid->number_of_cells_per_dimension + pos.j;
 }
 
-float distance_squared(Vec2 a, Vec2 b) {
-  float x  = (a.x - b.x);
-  float y  = (a.y - b.y);
-  float x2 = square(x);
-  float y2 = square(y);
-  return x2 + y2;
+
+template<size_t M>
+double distance_squared(Vec<M> a, Vec<M> b) {
+  return dot(a-b, a-b);
 }
 
-bool check_for_connection(Vec2 a, Vec2 b, float radius, float L) {
+template<size_t M>
+bool check_for_connection(Vec<M> a, Vec<M> b, float radius, float L) {
   return distance_squared(a, b) < square(L + 2*radius);
 }
 
@@ -805,7 +818,7 @@ void process_random_walk(Grid2D* grid, array<Vec<M>>* positions, float radius, f
       // find all min distances that we can put circle to.
       for (size_t k = 0; k < intersection.size; k++) {
         Grid_Cell cell = intersection[k];
-        Vec2*   origin = &(*positions)[cell];
+        Vec<M>*   origin = &(*positions)[cell];
 
         double p = intersection_distance[k];
         double l = 2*radius;
@@ -888,7 +901,7 @@ void collect_points_to_graph_via_grid(Graph* graph, const Grid2D* grid, const ar
       Grid_Cell cell_id = neighbours[c];
 
       assert(cell_id != CELL_IS_EMPTY);
-      Vec2 neighbour = (*positions)[cell_id];
+      Vec<M> neighbour = (*positions)[cell_id];
 
       if (check_for_connection(point, neighbour, radius, L)) {
         add_connection_to_graph_node(graph, k, cell_id);
@@ -1474,12 +1487,12 @@ static int computation_thread_proc(void* param) {
   Thread_Data data = *(Thread_Data*) param;
 
   size_t largest_cluster_size;
-  do_the_thing<2>(data.arena,
-                  data.cluster,
-                  data.particle_radius,
-                  data.jumping_conductivity_distance,
-                  data.packing_factor,
-                  &largest_cluster_size);
+  do_the_thing<DIM>(data.arena,
+                    data.cluster,
+                    data.particle_radius,
+                    data.jumping_conductivity_distance,
+                    data.packing_factor,
+                    &largest_cluster_size);
 
   InterlockedExchange64(&result_largest_cluster_size, (int64) largest_cluster_size);
 
@@ -1825,7 +1838,12 @@ void draw_grid() {
   glEnd();
 }
 
-void draw_circles(Thread_Data* data) {
+#if 0
+template<size_t M>
+void draw_circles(Thread_Data* data); 
+
+template<>
+void draw_circles<2>(Thread_Data* data) {
   uint N = global_positions.size;
 
   glm::vec3 red   = glm::vec3(1, 0, 0);
@@ -1840,7 +1858,7 @@ void draw_circles(Thread_Data* data) {
     draw_circle(glm::vec2(v.x, v.y), glm::vec2(data->particle_radius, data->particle_radius), color);
   }
 }
-
+#endif
 
 void update_and_render(GLFWwindow* window) {
   static bool show_demo_window  = false;
@@ -1959,7 +1977,7 @@ void update_and_render(GLFWwindow* window) {
 
 
   draw_grid();
-  draw_circles(&thread_data);
+  //draw_circles<DIM>(&thread_data);
 
   Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
 
