@@ -13,7 +13,8 @@ static const size_t DIM = 3;
 
 const double PI  = 3.14159265358979323846;
 const double TAU = 6.28318530717958647692;
-const double MAX_POSSIBLE_PACKING_FACTOR = PI * sqrt(3) / 6.0;
+const double MAX_POSSIBLE_PACKING_FACTOR_2D = PI * sqrt(3) / 6.0;
+const double MAX_POSSIBLE_PACKING_FACTOR_3D = 0.74;
 
 const float  left_boundary = -1.0f;
 const float right_boundary =  1.0f;
@@ -502,6 +503,11 @@ bool check_for_connection(Vec<M> a, Vec<M> b, float radius, float L) {
 }
 
 template<size_t M>
+bool check_for_intersection(Vec<M> a, Vec<M> b, float radius) {
+  return distance_squared(a, b) < square(2*radius);
+}
+
+template<size_t M>
 void check_circle_touches_boundaries(Vec<M> pos, float radius, uint cluster_size, Cluster_Data<M>* result);
 
 template<>
@@ -738,7 +744,7 @@ void tightest_packing_sampling<2>(array<Vec<2>>* array, float* max_random_walkin
 
   // target_radius^2 -- packing_factor.
   // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
-  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor);
+  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR_2D / packing_factor);
   float height = sqrt(3) * radius;
 
   *max_random_walking_distance = radius - target_radius;
@@ -771,7 +777,7 @@ void tightest_packing_sampling<3>(array<Vec<3>>* array, float* max_random_walkin
 
   // target_radius^2 -- packing_factor.
   // radius       ^2 -- MAX_POSSIBLE_PACKING_FACTOR.
-  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR / packing_factor); // @Incomplete: ?
+  float radius = sqrt(square(target_radius) * MAX_POSSIBLE_PACKING_FACTOR_3D / packing_factor); // @Incomplete: ?
   float height = sqrt(3) * radius;
 
   *max_random_walking_distance = radius - target_radius;
@@ -954,6 +960,77 @@ Vec<3> clamp_boundaries(Vec<3> a, double radius) {
 
 template<size_t M>
 void process_random_walk(Grid2D* grid, array<Vec<M>>* positions, float radius, float max_random_walking_distance) {
+#if 1
+  array<Grid_Cell> neighbours;
+
+  defer { array_free(&neighbours); };
+
+  for (size_t i = 0; i < positions->size; i++) {
+    for (size_t n = 0; n < 4; n++) {
+      Vec<M>* point = &(*positions)[i];
+
+      array_clear(&neighbours);
+      take_all_neighbours_with_distance(grid, &neighbours, *point, radius, max_random_walking_distance);
+
+
+      Vec<M> unit_direction = make_unit_direction<M>();
+      double distance       = generate_random_double_in_range(0, max_random_walking_distance);
+
+
+      Vec<M> jump_to = *point + distance*unit_direction;
+
+      jump_to = clamp_boundaries(jump_to, radius);
+
+      uint p_id = get_circle_id_on_a_grid(grid, *point);
+      uint n_id = get_circle_id_on_a_grid(grid, jump_to);
+
+      Grid_Cell* previous = &grid->data[p_id];
+      Grid_Cell* next     = &grid->data[n_id];
+      bool cell_is_not_occupied = *next == CELL_IS_EMPTY;
+
+      if (*previous == *next) {
+        *point = jump_to;
+        continue;
+      }
+
+
+      bool do_not_intersect = true;
+      if (cell_is_not_occupied) {
+        // 
+        // just check that we don't intersect anyone.
+        // 
+      
+        for (size_t k = 0; k < neighbours.size; k++) {
+          Grid_Cell cell     = neighbours[k];
+          Vec<M>   neighbour = (*positions)[cell];
+
+          if (check_for_intersection(*point, neighbour, radius)) {
+            do_not_intersect = false;
+            break;
+          }
+        }
+      } else {
+        if (*previous == *next) {
+          // cell is occupied by us.
+        } else {
+          // cell is ocuupied by someone else.
+          do_not_intersect = false;
+        }
+      }
+
+
+      if (*previous != *next && do_not_intersect) {
+        assert(*next == CELL_IS_EMPTY);
+
+        *point    = jump_to;
+        *next     = *previous;
+        *previous = CELL_IS_EMPTY;
+      } else {
+        // Rejected.
+      }
+    }
+  }
+#else
   array<Grid_Cell> neighbours;
   array<Grid_Cell> intersection;
   array<double>    intersection_distance;
@@ -1053,6 +1130,7 @@ void process_random_walk(Grid2D* grid, array<Vec<M>>* positions, float radius, f
       }
     }
   }
+#endif
 }
 
 
@@ -1546,8 +1624,21 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
 
   const size_t N = positions.size;
   const float one_dimension_range = right_boundary - left_boundary;
-  const float max_window_area  = square(one_dimension_range);
-  const float max_circles_area = positions.size * PI * square(radius);
+
+  float max_window_area;
+  if (M == 2) {
+    max_window_area = square(one_dimension_range);
+  } else if (M == 3) {
+    max_window_area = pow(one_dimension_range, 3);
+  }
+
+  float max_circles_area;
+  if (M == 2) {
+    max_circles_area = positions.size * PI * square(radius);
+  } else if (M == 3) {
+    max_circles_area = positions.size * 4/3.0f * PI * pow(radius, 3);
+  }
+
   const float experimental_packing_factor = max_circles_area / max_window_area;
 
   printf("[..]\n");
@@ -1558,7 +1649,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
   printf("[..] Generated points     := %zu\n", positions.size);
 
   assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
-  assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069... ( square grid only!!! )
+  // assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069... ( square grid only!!! )
   // assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
 
 
@@ -1591,8 +1682,8 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
     measure_scope();
     process_random_walk(&grid, &positions, radius, max_random_walking_distance);
   }
-  //assert(check_circles_are_inside_a_box(&positions, radius));
-  //assert(check_circles_do_not_intersect_each_other(&positions, radius));
+  // assert(check_circles_are_inside_a_box(&positions, radius));
+  // assert(check_circles_do_not_intersect_each_other(&positions, radius));
 
   Graph graph;
   graph.count = N;
