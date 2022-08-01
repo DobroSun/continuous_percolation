@@ -2,7 +2,7 @@
 
 
 #include <random>
-#include "../std/pch.h"
+#include "../../lib/pch.cpp"
 
 
 const uint CELL_IS_EMPTY = 0xFFFFFFFF;
@@ -68,14 +68,9 @@ void init_circles_vertices_and_indices_data() {
   }
 }
 
-struct string {
-  char*  data;
-  size_t count;
-};
-
 struct Vertex_And_Fragment_Shader_Sources {
-  string vertex;
-  string fragment;
+  literal vertex;
+  literal fragment;
 };
 
 template<size_t M>
@@ -375,26 +370,9 @@ struct Basic_Shader_Data {
   float* mvp; // 16 floats.
 };
 
-struct Thread_Data {
-  Memory_Arena*      arena;
-  Cluster_Data<DIM>* cluster;
-
-  float particle_radius;
-  float jumping_conductivity_distance;
-  float packing_factor;
-};
-
-static Vertex_Array circle = {};
-static Vertex_Array line   = {};
-static Vertex_Array quad   = {};
-static Vertex_Array batched_quads   = {};
-static Vertex_Array batched_circles = {};
 static Shader            basic_shader = {};
 static Basic_Shader_Data basic_shader_data = {};
 
-static Thread computation_thread = {};
-static Thread_Data thread_data   = {};
-static Memory_Arena arena        = {};
 static Cluster_Data<DIM> cluster      = {};
 
 static array<Vec<DIM>> global_positions = {};
@@ -411,9 +389,6 @@ double generate_random_double_in_range(double from, double to) {
   std::uniform_real_distribution<double> dist(from, to);
   return dist(e);
 }
-
-bool string_compare(const char* a, string b) { return b.count && strncmp(a, b.data, b.count) == 0; }
-bool string_compare(string a, const char* b) { return string_compare(b, a); }
 
 void add_to_queue(Queue* queue, uint object) {
   assert(queue->last  <  queue->max_size);
@@ -941,17 +916,17 @@ Vec<3> make_unit_direction<3>() {
 
 
 template<size_t M>
-Vec<M> clamp_boundaries(Vec<M> a, double);
+Vec<M> clamp_boundaries(Vec<M> a, float);
 
 template<>
-Vec<2> clamp_boundaries(Vec<2> a, double radius) {
+Vec<2> clamp_boundaries(Vec<2> a, float radius) {
   a.x = clamp(a.x,  left_boundary+radius, right_boundary-radius);
   a.y = clamp(a.y, lower_boundary+radius, upper_boundary-radius);
   return a;
 }
 
 template<>
-Vec<3> clamp_boundaries(Vec<3> a, double radius) {
+Vec<3> clamp_boundaries(Vec<3> a, float radius) {
   a.x = clamp(a.x,  left_boundary+radius, right_boundary-radius);
   a.y = clamp(a.y, lower_boundary+radius, upper_boundary-radius);
   a.z = clamp(a.z,  near_boundary+radius,   far_boundary-radius);
@@ -1264,48 +1239,29 @@ void clear_cluster_data(Cluster_Data<M>* a) {
 
 
 
-string read_entire_file(const char* filename) {
-  File file;
-  bool success = file_open(&file, filename);
-  if (!success) { return {}; }
-
-  defer { file_close(&file); };
-
-  size_t size = file_get_size(&file);
-  char*  data = (char*) malloc(size+1);
-  memset(data, 0, size+1);
-
-  size_t written = 0;
-  success = file_read(&file, data, size, &written);
-  if (!success)        { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
-  if (written != size) { return {}; } // @LogError: @MemoryLeak: @DeferFileClose: 
-
-  return { data, size };
-}
-
-Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
-  string s = read_entire_file(filename); // @MemoryLeak: 
+Vertex_And_Fragment_Shader_Sources load_shaders(literal filename) {
+  literal s = read_entire_file(filename); // @MemoryLeak: 
   if (!s.count) return {};               // @MemoryLeak: 
 
   static const uint TAG_NOT_FOUND  = (uint) -1;
-  static const string vertex_tag   = make_string("#vertex");
-  static const string fragment_tag = make_string("#fragment");
-  static const string tags[]       = { vertex_tag, fragment_tag };
+  static const literal vertex_tag   = make_literal("#vertex");
+  static const literal fragment_tag = make_literal("#fragment");
+  static const literal tags[]       = { vertex_tag, fragment_tag };
 
   bool vertex_found   = false;
   bool fragment_found = false;
   bool vertex_two_or_more_occurrences   = false;
   bool fragment_two_or_more_occurrences = false;
 
-  string shaders[2] = {};
+  literal shaders[2] = {};
 
-  uint    index  = TAG_NOT_FOUND;
-  char*   cursor = s.data;
-  string* current_shader = NULL;
+  uint index  = TAG_NOT_FOUND;
+  const char* cursor = s.data;
+  literal* current_shader = NULL;
 
   while (*cursor != '\0') {
-    bool vertex   = string_compare(cursor, tags[0]);
-    bool fragment = string_compare(cursor, tags[1]); 
+    bool vertex   = tags[0] == cursor;
+    bool fragment = tags[1] == cursor;
 
     vertex_two_or_more_occurrences   = vertex_two_or_more_occurrences   || (vertex_found    && vertex);
     fragment_two_or_more_occurrences = fragment_two_or_more_occurrences || (fragment_found  && fragment);
@@ -1335,7 +1291,7 @@ Vertex_And_Fragment_Shader_Sources load_shaders(const char* filename) {
   return { shaders[0], shaders[1] };
 }
 
-unsigned create_shader(string vertex, string fragment) {
+unsigned create_shader(literal vertex, literal fragment) {
   unsigned program = glCreateProgram();
 
   unsigned vs = glCreateShader(GL_VERTEX_SHADER);
@@ -1398,170 +1354,6 @@ error:
   return 0;
 }
 
-void gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
-  printf("[..] %s: %.*s\n", (type == GL_DEBUG_TYPE_ERROR ? "GL ERROR" : "" ), (int)length, message);
-
-  __debugbreak(); // @MSVC_Only: 
-}
-
-
-void add_vertex_attribute(Vertex_Attribute va) {
-  glEnableVertexAttribArray(va.attribute_index);
-  glVertexAttribPointer(va.attribute_index, 
-                        va.number_of_values_in_an_attribute,
-                        va.attribute_type,
-                        va.is_normalized,
-                        va.size_of_one_vertex_in_bytes,
-                        (const void*) va.size_to_an_attribute_from_beginning_of_a_vertex_in_bytes);
-}
-
-template<class T> GLenum get_index_type()  { return assert(0 && "get_index_type expects only uint8, uint16, uint32 types!"); }
-template<> GLenum get_index_type<uint8 >() { return GL_UNSIGNED_BYTE;  }
-template<> GLenum get_index_type<uint16>() { return GL_UNSIGNED_SHORT; }
-template<> GLenum get_index_type<uint32>() { return GL_UNSIGNED_INT;   }
-
-
-
-
-uint create_vertex_array() {
-  uint buffer;
-  glGenVertexArrays(1, &buffer);
-  glBindVertexArray(buffer);
-  return buffer;
-}
-
-uint create_vertex_buffer(Create_Vertex_Buffer vbo, GLenum mode = GL_STATIC_DRAW) {
-  uint buffer;
-  glGenBuffers(1, &buffer);
-  uint create_vertex_buffer_data(uint, Create_Vertex_Buffer, GLenum);
-  return create_vertex_buffer_data(buffer, vbo, mode);
-}
-
-uint create_vertex_buffer_data(uint buffer, Create_Vertex_Buffer vbo, GLenum mode = GL_STATIC_DRAW) {
-  glBindBuffer(GL_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(*vbo.data) * vbo.size, vbo.data, mode);
-  return buffer;
-}
-
-uint update_vertex_buffer_data(uint buffer, Create_Vertex_Buffer vbo) {
-  glBindBuffer(GL_ARRAY_BUFFER, buffer);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(*vbo.data) * vbo.size, vbo.data);
-  return buffer;
-}
-
-template<class T>
-uint create_index_buffer(Create_Index_Buffer<T> ibo, GLenum mode = GL_STATIC_DRAW) {
-  uint buffer;
-  glGenBuffers(1, &buffer);
-  return create_index_buffer_data(buffer, ibo, mode);
-}
-
-template<class T>
-uint create_index_buffer_data(uint buffer, Create_Index_Buffer<T> ibo, GLenum mode = GL_STATIC_DRAW) {
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(*ibo.data) * ibo.size, ibo.data, mode);
-  return buffer;
-}
-
-Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, GLenum primitive = 0, GLenum drawing_mode = GL_STATIC_DRAW) {
-  assert(primitive && "rendering primitive was not provided when creating vertex buffer object!");
-
-  int number_of_vertices_per_primitive;
-  switch(primitive) {
-  case GL_LINES:      number_of_vertices_per_primitive = 2; break;;
-  case GL_TRIANGLES:  number_of_vertices_per_primitive = 3; break;;
-  default: assert(0 && "unknown rendering primitive!");     break;
-  }
-  assert((vbo.size % number_of_vertices_per_primitive) == 0);
-
-  uint vao_id = create_vertex_array();
-  uint vbo_id = create_vertex_buffer(vbo, drawing_mode);
-  uint ibo_id = 0;
-
-  Vertex_Array va;
-  va.vao = vao_id;
-  va.vbo = vbo_id;
-  va.ibo = ibo_id;
-
-  va.vbo_attribute_index_in_enabled_array = 0;
-  va.vbo_number_of_vertices_to_draw = vbo.size/number_of_vertices_per_primitive;
-  va.vbo_primitive_to_render        = primitive;
-  return va;
-}
-
-template<class T>
-Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo, GLenum drawing_mode = GL_STATIC_DRAW) {
-  uint vao_id = create_vertex_array();
-  uint vbo_id = create_vertex_buffer(vbo, drawing_mode);
-  uint ibo_id = create_index_buffer(ibo, drawing_mode);
-
-  Vertex_Array va;
-  va.vao = vao_id;
-  va.vbo = vbo_id;
-  va.ibo = ibo_id;
-
-  va.ibo_type_of_indices = get_index_type<T>();
-  va.ibo_number_of_elements_to_draw = ibo.size;
-  va.ibo_indices_array = NULL;
-  return va;
-}
-
-#if 0
-template<class T>
-Vertex_Array create_vertex_array(Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo, Vertex_Attribute attrib, GLenum primitive = 0, GLenum mode = GL_STATIC_DRAW) {
-  uint vao_id = create_vertex_array();
-  uint vbo_id = create_vertex_buffer(vbo, mode);
-  uint ibo_id = create_index_buffer(ibo, mode);
-
-  Vertex_Array va = {};
-  va.vao = vao_id;
-  va.vbo = vbo_id;
-  va.ibo = ibo_id;
-
-  va.kind_of_primitive = primitive;
-  return va;
-}
-#endif
-
-#if 0
-template<class T>
-uint update_index_buffer_data(uint buffer, Create_Index_Buffer<T> ibo) {
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
-  glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(*ibo.data) * ibo.size, ibo.data);
-  return buffer;
-}
-
-template<class T>
-Vertex_Array update_vertex_array_data(Vertex_Array va, Create_Vertex_Buffer vbo) {
-  assert(va.vao);
-  assert(va.vbo);
-  assert(va.ibo);
-
-  udpate_vertex_buffer_data(va.vbo, vbo);
-  udpate_index_buffer_data(va.ibo, ibo);
-
-  va.vbo_attribute_index_in_enabled_array = 0;
-  va.vbo_number_of_vertices_provided = vbo.size;
-  return va;
-}
-#endif
-
-#if 0
-template<class T>
-Vertex_Array update_vertex_array_data(Vertex_Array va, Create_Vertex_Buffer vbo, Create_Index_Buffer<T> ibo) {
-  assert(va.vao);
-  assert(va.vbo);
-  assert(va.ibo);
-
-  udpate_vertex_buffer_data(va.vbo, vbo);
-  udpate_index_buffer_data(va.ibo, ibo);
-
-  va.ibo_type_of_indices = get_index_type<T>();
-  va.ibo_number_of_elements_provided = ibo.size;
-  va.ibo_indices_array = NULL;
-  return va;
-}
-#endif
 
 void bind_vertex_array(uint vao)  { glBindVertexArray(vao); }
 void bind_vertex_buffer(uint vbo) { glBindBuffer(GL_ARRAY_BUFFER, vbo); }
@@ -1657,7 +1449,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
   grid.cell_size                     = sqrt(2)*radius;
   grid.number_of_cells_per_dimension = one_dimension_range / grid.cell_size;
   grid.number_of_cells               = pow(grid.number_of_cells_per_dimension, M);
-  grid.data                          = (Grid_Cell*) alloc(arena->allocator, sizeof(*grid.data) * grid.number_of_cells);
+  grid.data                          = (Grid_Cell*) alloc(arena->allocator, sizeof(*grid.data) * grid.number_of_cells).memory;
 
   memset(grid.data, 0xFF, sizeof(*grid.data) * grid.number_of_cells);
 
@@ -1687,7 +1479,7 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
 
   Graph graph;
   graph.count = N;
-  graph.connected_nodes_count = (uint8*) alloc(arena->allocator, sizeof(uint8) * (arena->allocated - arena->top)); // allocate to max capacity.
+  graph.connected_nodes_count = (uint8*) alloc(arena->allocator, sizeof(uint8) * (arena->allocated - arena->top)).memory; // allocate to max capacity.
   graph.connected_nodes       = (uint**) ((char*)graph.connected_nodes_count + sizeof(*graph.connected_nodes_count) * N);
   graph.graph_data            = (uint*)  ((char*)graph.connected_nodes       + sizeof(*graph.connected_nodes)       * N);
 
@@ -1709,11 +1501,11 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
   array<uint> cluster_sizes;
   cluster_sizes.allocator = temp.allocator;
 
-  bool* hash_table = (bool*) alloc(temp.allocator, sizeof(bool) * N); // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
+  bool* hash_table = (bool*) alloc(temp.allocator, sizeof(bool) * N).memory; // @Incomplete: instead of using 1 byte, we can use 1 bit => 8 times less memory for a hash_table.
   memset(hash_table, false, sizeof(bool) * N);
 
   Queue queue;
-  queue.data     = (uint*) alloc(temp.allocator, sizeof(uint) * N);
+  queue.data     = (uint*) alloc(temp.allocator, sizeof(uint) * N).memory;
   queue.first    = 0;
   queue.last     = 0;
   queue.max_size = N;
@@ -1766,56 +1558,12 @@ void do_the_thing(Memory_Arena* arena, Cluster_Data<M>* cluster, float radius, f
 
 }
 
-static int computation_thread_proc(void* param) {
-  Thread_Data data = *(Thread_Data*) param;
+Memory_Arena arena;
+array<Vec<2>> positions;
 
-  size_t largest_cluster_size;
-  do_the_thing<DIM>(data.arena,
-                    data.cluster,
-                    data.particle_radius,
-                    data.jumping_conductivity_distance,
-                    data.packing_factor,
-                    &largest_cluster_size);
-
-  InterlockedExchange64(&result_largest_cluster_size, (int64) largest_cluster_size);
-
-  // 
-  // 
-  //
-  return 0;
-}
-
-#if 0
-void abstract_the_thing(glm::vec2* positions, size_t positions_count, glm::vec2* source_vertex, size_t source_vertex_count, uint* source_index, size_t source_index_count, glm::vec2* out_vertex, size_t* out_vertex_count, uint* out_index, size_t* out_index_count) {
-
-  for (size_t i = 0; i < positions_count; i++) {
-    glm::vec2 world = positions[i];
-    glm::mat4 transform = glm::translate(glm::mat4(1), glm::vec3(world.x, world.y, 0));
-
-    for (size_t k = 0; k < source_vertex_count; k++) {
-      out_vertex[k] = transform * glm::vec4(source_vertex[k], 0, 0);
-      *out_vertex_count += sizeof(*out_vertex) / sizeof(float);
-    }
-
-    size_t idx = i * source_index_count;
-    for (size_t k = 0; k < source_index_count; k++) {
-      out_index[k] = idx + source_index[k];
-      *out_index_count += 1;
-    }
-  }
-}
-
-void make_grid_positions(const Grid2D* grid, glm::vec2* grid_vertices) {
-  size_t size = 0;
-  for (size_t i = 0; i < grid->number_of_cells_per_dimension; i++) {
-    for (size_t j = 0; j < grid->number_of_cells_per_dimension; j++) {
-      grid_vertices[size] = { (float)i, (float)j };
-      grid_vertices[size] /= grid->number_of_cells_per_dimension;
-      size++;
-    }
-  }
-}
-#endif
+float particle_radius;
+float connection_radius;
+float packing_factor;
 
 void init_program(int width, int height) {
   init_filesystem_api();
@@ -1824,243 +1572,61 @@ void init_program(int width, int height) {
   check_filesystem_api();
   check_threads_api();
 
-  {
-    init_circles_vertices_and_indices_data();
-  }
+  init_circles_vertices_and_indices_data();
 
-  { // @Incomplete: use std C++11 stuff.
-    uint seed = time(NULL);
-    srand(seed);
-  }
+  begin_temporary_storage(&temporary_storage, MB(256));
+  begin_memory_arena(&arena, GB(5));
 
-  {
-    // Initialize default input;
-    Thread_Data* data = &thread_data;
-    data->arena           = &arena;
-    data->cluster         = &cluster;
-    data->particle_radius = 0.05;
-    data->jumping_conductivity_distance = 0.02;
-    data->packing_factor  = 0.7;
-
-    begin_memory_arena(data->arena, MEMORY_ALLOCATION_SIZE);
-  }
-
-  { // loading shaders.
-    Vertex_And_Fragment_Shader_Sources shaders = load_shaders("src/Basic.shader"); // @MemoryLeak: 
-    basic_shader.program = create_shader(shaders.vertex, shaders.fragment);
-    basic_shader.setup_uniform = basic_shader_uniform;
-    basic_shader.data = &basic_shader_data;
-
-    basic_shader_data.uniform_mvp = glGetUniformLocation(basic_shader.program, "uniform_mvp");   // get address of uniform variable
-    assert(basic_shader_data.uniform_mvp != -1);
-  }
-
-#if 0
-  { // line
-    Create_Vertex_Buffer vbo;
-    vbo.data = lines_vertices_data;
-    vbo.size = static_array_size(lines_vertices_data);
-
-    line = create_vertex_array(vbo, GL_LINES);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes = sizeof(float) * 2;
-    add_vertex_attribute(va);
-  }
-  { // quad
-    Create_Vertex_Buffer vbo;
-    vbo.data = quads_vertices_data;
-    vbo.size = static_array_size(quads_vertices_data);
-
-    Create_Index_Buffer<uint32> ibo;
-    ibo.data = quads_indices_data;
-    ibo.size = static_array_size(quads_indices_data);
-
-    quad = create_vertex_array(vbo, ibo);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes = sizeof(*quads_vertices_data) * 2;
-    add_vertex_attribute(va);
-  }
-  { // circle
-    Create_Vertex_Buffer vbo;
-    Create_Index_Buffer<uint32> ibo;
-
-    vbo.data = circles_vertices_data;
-    vbo.size = static_array_size(circles_vertices_data);
-
-    ibo.data = circles_indices_data;
-    ibo.size = static_array_size(circles_indices_data);
-
-    circle = create_vertex_array(vbo, ibo);
-
-    Vertex_Attribute va;
-    va.attribute_index = 0;
-    va.number_of_values_in_an_attribute = 2;
-    va.size_of_one_vertex_in_bytes = sizeof(*circles_vertices_data) * 2;
-    add_vertex_attribute(va);
-  }
-  { // batched circles // @Incomplete: I need better circle drawing, because now we draw circles as GL_LINES, so we can't really batch them together, they are all connected to each other.
-    size_t size = global_positions.size;
-    float* vertex = (float*)alloca(size * static_array_size(circles_vertices_data) * sizeof(float));
-    uint32* index = (uint32*)alloca(size * static_array_size(circles_indices_data) * sizeof(uint32));
-
-    size_t vertex_count = 0;
-    size_t index_count = 0;
-
-    float norm_size = thread_data.particle_radius;
-
-    for (size_t i = 0; i < size; i++) {
-      Vec2 world = global_positions[i]; // these are world coordinates, but they are already normalized.
-      
-
-      for (size_t k = 0; k < static_array_size(circles_vertices_data); k += 2) {
-        Vec2 local = { circles_vertices_data[k], circles_vertices_data[k + 1] }; // these are local coordinates.
-
-        local = norm_size * local; // scale
-        Vec2 pos = world + local;
-
-        vertex[vertex_count++] = pos.x;
-        vertex[vertex_count++] = pos.y;
-      }
-
-      size_t idx = i * static_array_size(circles_indices_data);
-      for (size_t k = 0; k < static_array_size(circles_indices_data); k++) {
-        index[index_count++] = idx + circles_indices_data[k];
-      }
-    }
-    {
-      Create_Vertex_Buffer vbo;
-      Create_Index_Buffer<uint32> ibo;
-
-      vbo.data = vertex;
-      vbo.size = vertex_count;
-
-      ibo.data = index;
-      ibo.size = index_count;
-
-      batched_circles = create_vertex_array(vbo, ibo);
-
-      Vertex_Attribute va;
-      va.attribute_index = 0;
-      va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
-      add_vertex_attribute(va);
-    }
-  }
-
-
-  { // batched quads
-#if 0
-  size_t     num_world_vertices = square(global_grid.number_of_cells_per_dimension);
-  glm::vec2* world_vertices = (glm::vec2*) alloca(num_world_vertices * sizeof(*world_vertices));
-
-  make_grid_positions(&global_grid, world_vertices);
-
-  size_t num_vertices = num_world_vertices * static_array_size(quads_vertices_data);
-  size_t num_indices  = num_world_vertices * static_array_size(quads_indices_data);
-
-  size_t vertex_count = 0;
-  size_t index_count  = 0;
-  glm::vec2* vertex = (glm::vec2 *) alloca(num_vertices * sizeof(*vertex));
-  uint32* index  = (uint32*) alloca(num_indices  * sizeof(*index));
-
-  abstract_the_thing(world_vertices, num_world_vertices, (glm::vec2*) quads_vertices_data, static_array_size(quads_vertices_data), (uint*) quads_indices_data, static_array_size(quads_indices_data), vertex, &vertex_count, index, &index_count);
-
-  // @Incomplete: 
-  // apply scale & transform (can do that in a vertex shader).
-  //
-
-#if 0
-  for (size_t i = 0; i < vertex_count; i++) {
-    vertex[i] = 2.0f * vertex[i] - 1.0f;
-    printf("%g\n", vertex[i]);
-    assert(-1.0f <= vertex[i].x && vertex[i].x <= 1.0f);
-    assert(-1.0f <= vertex[i].y && vertex[i].y <= 1.0f);
-  }
-#endif
-
-#else
-    size_t  n_cells   = global_grid.number_of_cells_per_dimension;
-    float cell_size   = global_grid.cell_size;
-    float norm_size   = 2.0f / (float)n_cells;
-    float norm_offset = 0.5f;
-
-    size_t number_of_batched_vertices = n_cells * n_cells * static_array_size(quads_vertices_data);
-    float*  vertex = (float *) alloca(number_of_batched_vertices * sizeof(float));
-    uint32* index  = (uint32*) alloca(number_of_batched_vertices * sizeof(uint32));
-
-    size_t vertex_count = 0;
-    size_t index_count  = 0;
-
-    for (size_t i = 0; i < n_cells; i++) {
-      for (size_t j = 0; j < n_cells; j++) {
-        Vec2 center = { (float)(i / (float)n_cells), (float)(j) / (float)n_cells }; // this is my world coordinates!
-
-        // 
-        // I want to combine world & local coordinates.
-        // how do I do that? 
-        // world coordinates ARE NOT in normalized space.
-        // local coordinates ARE in normalized space.
-        //
-        // first, we need to convert world cordinates to normalized space.
-        // second, we need to translate and scale local quad.
-        // then we can sum them up: center + local.
-        //
-
-        //center = norm_size * center  - Vec2{ 1.0f, 1.0f };
-
-
-        for (size_t k = 0; k < static_array_size(quads_vertices_data); k += 2) {
-          Vec2 local = { quads_vertices_data[k], quads_vertices_data[k+1] }; // this is my local coordinates.
-
-          //local = norm_size * (local + Vec2{ norm_offset, norm_offset }); // translate & scale.
-          Vec2 pos = center + local;
-
-          pos = pos - Vec2{ norm_offset, norm_offset };
-
-          vertex[vertex_count++] = pos.x;
-          vertex[vertex_count++] = pos.y;
-        }
-          
-        size_t idx = i * static_array_size(quads_indices_data);
-        for (size_t k = 0; k < static_array_size(quads_indices_data); k++) {
-          index[index_count++] = idx + quads_indices_data[k];
-        }
-      }
-    }
-#endif
-
-    {
-      Create_Vertex_Buffer vbo;
-      vbo.data = (float*) vertex;
-      vbo.size = vertex_count;
-
-      Create_Index_Buffer<uint32> ibo;
-      ibo.data = index;
-      ibo.size = index_count;
-
-      batched_quads = create_vertex_array(vbo, ibo);
-
-      Vertex_Attribute va;
-      va.attribute_index = 0;
-      va.number_of_values_in_an_attribute = 2;
-      va.size_of_one_vertex_in_bytes = sizeof(*vertex) * 2;
-      add_vertex_attribute(va);
-    }
-  }
-#endif
   {
     ImGui::StyleColorsDark();
   }
+
+  void do_the_thing2();
+  do_the_thing2();
 }
 
+void do_the_thing2() {
+  positions.allocator = arena.allocator;
+
+  float max_random_walking_distance;
+
+  particle_radius = 0.1;
+  connection_radius = 0.7;
+  packing_factor = 0.4;
+
+
+  {
+    print("[..] Generating nodes ... \n");
+    print("[..] Finished sampling points in := ");
+
+    measure_scope();
+    //naive_random_sampling(&positions, radius);
+    //poisson_disk_sampling(&positions, N, radius);
+    tightest_packing_sampling(&positions, &max_random_walking_distance, particle_radius, packing_factor);
+  }
+
+  size_t N = positions.size;
+  float one_dimension_range = right_boundary - left_boundary;
+  float max_window_area = square(one_dimension_range);
+  float max_circles_area = positions.size * PI * square(particle_radius);;
+  float experimental_packing_factor = max_circles_area / max_window_area;
+
+  printf("\n[..]\n");
+  printf("[..] Radius of a circle   := %g\n", particle_radius);
+  printf("[..] Connection radius(L) := %g\n", connection_radius);
+  printf("{..] Packing factor       := %g\n", packing_factor);
+  printf("[..] Generated packing factor := %g\n", experimental_packing_factor);
+  printf("[..] Generated points     := %zu\n", positions.size);
+
+  assert(N < UINT_MAX);                                              // because we are using uints to address graph nodes, N is required to be less than that.
+  // assert(packing_factor < MAX_POSSIBLE_PACKING_FACTOR);              // packing factor must be less than 0.9069... ( square grid only!!! )
+  // assert(fabs(experimental_packing_factor - packing_factor) < 1e-1); // @Incomplete: 
+
+}
 void deinit_program() {
-  end_memory_arena(thread_data.arena);
+  end_temporary_storage(&temporary_storage);
+
+  end_memory_arena(&arena);
   array_free(&cluster.cluster);
 }
 
@@ -2069,6 +1635,22 @@ void draw_triangle() {
     glVertex2f(-0.5f, -0.5f);
     glVertex2f(0.0f, 0.5f);
     glVertex2f(0.5f, -0.5f);
+  glEnd();
+}
+
+void draw_grid() {
+  size_t N        = global_grid.number_of_cells_per_dimension;
+  float cell_size = global_grid.cell_size;
+  float cap       = cell_size*N - 1;
+
+  glBegin(GL_LINES);
+  for (size_t i = 0; i < N+1; i++) { // N cells so (N+1) lines to draw.
+    float w = i*cell_size - 1;
+    glVertex2f(-1.0f, w);
+    glVertex2f( cap, w);
+    glVertex2f(w, -1.0f);
+    glVertex2f(w,  cap);
+  }
   glEnd();
 }
 
@@ -2105,59 +1687,27 @@ void draw_circle(glm::vec2 position, glm::vec2 size, glm::vec3 color) {
   glEnd();
 }
 
-void draw_grid() {
-  size_t N        = global_grid.number_of_cells_per_dimension;
-  float cell_size = global_grid.cell_size;
-  float cap       = cell_size*N - 1;
-
-  glBegin(GL_LINES);
-  for (size_t i = 0; i < N+1; i++) { // N cells so (N+1) lines to draw.
-    float w = i*cell_size - 1;
-    glVertex2f(-1.0f, w);
-    glVertex2f( cap, w);
-    glVertex2f(w, -1.0f);
-    glVertex2f(w,  cap);
-  }
-  glEnd();
-}
-
-#if 0
-template<size_t M>
-void draw_circles(Thread_Data* data); 
-
-template<>
-void draw_circles<2>(Thread_Data* data) {
-  uint N = global_positions.size;
+void draw_circles() {
+  uint N = positions.size;
 
   glm::vec3 red   = glm::vec3(1, 0, 0);
   glm::vec3 green = glm::vec3(0, 1, 0);
 
+  glm::vec3 color = green;
+
   for (uint i = 0; i < N; i++) {
-    Vec2 v = global_positions[i];
+    Vec2 v = positions[i];
 
-    uint*     found = array_find(&data->cluster->cluster, i);
-    glm::vec3 color = found ? green : red;
-
-    draw_circle(glm::vec2(v.x, v.y), glm::vec2(data->particle_radius, data->particle_radius), color);
+    draw_circle(glm::vec2(v.x, v.y), glm::vec2(particle_radius, particle_radius), color);
   }
 }
-#endif
 
 void update_and_render(GLFWwindow* window) {
-  static bool show_demo_window  = false;
-  static bool thread_is_paused  = false;
-  static bool show_visual_ui    = true;
-  static bool show_visual_line  = false;
-  static bool show_visual_grid  = false;
-  static bool show_visual_spheres = false;
-
-  Vec4 visual_ui_min = {};
-  Vec4 visual_ui_max = {};
 
   int width, height;
   glfwGetFramebufferSize(window, &width, &height);
 
-
+#if 0
   ImGuiIO& io = ImGui::GetIO();
 
   // Start the Dear ImGui frame
@@ -2165,33 +1715,11 @@ void update_and_render(GLFWwindow* window) {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
 
+  static bool show_demo_window = true;
   if (show_demo_window) {
-      ImGui::ShowDemoWindow(&show_demo_window);
+
+    ImGui::ShowDemoWindow(&show_demo_window);
   }
-
-  // Dummy window.
-  ImGui::Begin("#", NULL, ImGuiWindowFlags_NoCollapse || ImGuiWindowFlags_NoResize || ImGuiWindowFlags_NoTitleBar || ImGuiWindowFlags_NoScrollbar);
-  ImVec2 v_min = ImGui::GetWindowContentRegionMin();
-  ImVec2 v_max = ImGui::GetWindowContentRegionMax();
-
-  v_min.x += ImGui::GetWindowPos().x;
-  v_min.y += ImGui::GetWindowPos().y;
-  v_max.x += ImGui::GetWindowPos().x;
-  v_max.y += ImGui::GetWindowPos().y;
-  ImGui::End();
-
-  // y axis is flipped because screen coordinates increase from up to down. We can't workaround that :(
-  const Vec4 min = { -1.0f,  1.0f, 0.0f, 1.0f };
-  const Vec4 max = {  1.0f, -1.0f, 0.0f, 1.0f };
-
-  visual_ui_min = { v_min.x, v_min.y, 0, 1 };
-  visual_ui_max = { v_max.x, v_max.y, 0, 1 };
-
-  Matrix4x4 t = transform_screen_space_to_normalized_space(width, height);
-  visual_ui_min = t * visual_ui_min;
-  visual_ui_max = t * visual_ui_max;
-  // 
-
 
   {
     static const float step      = 0.0f;
@@ -2199,53 +1727,15 @@ void update_and_render(GLFWwindow* window) {
     static const char* format    = "%.4f";
     static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
-    float particle_radius               = thread_data.particle_radius;
-    float jumping_conductivity_distance = thread_data.jumping_conductivity_distance;
-    float packing_factor                = thread_data.packing_factor;
-
 
     ImGui::Begin("Control Window");
     ImGui::Checkbox("Demo Window", &show_demo_window);
-    ImGui::Checkbox("Visual UI", &show_visual_ui);
-    ImGui::Checkbox("Visual Line",    &show_visual_line);
-    ImGui::Checkbox("Visual Grid",    &show_visual_grid);
-    ImGui::Checkbox("Visual Spheres", &show_visual_spheres);
-
-    ImGui::InputFloat("Particle radius",               &thread_data.particle_radius,               step, step_fast, format, flags);
-    ImGui::InputFloat("Jumping conductivity distance", &thread_data.jumping_conductivity_distance, step, step_fast, format, flags);
-    ImGui::InputFloat("Packing factor",                &thread_data.packing_factor,                step, step_fast, format, flags);
 
     ImGui::Text("Particle radius               := %.3f", particle_radius);
-    ImGui::Text("Jumping conductivity distance := %.3f", jumping_conductivity_distance);
+    ImGui::Text("Jumping conductivity distance := %.3f", connection_radius);
     ImGui::Text("Packing factor                := %.3f", packing_factor);
-    ImGui::Text("Largest cluster size          := %lu",  result_largest_cluster_size);
-    ImGui::Text("Is percolating cluster found  := %s",   thread_data.cluster->is_percolating_cluster ? "true" : "false");
-
-  
-    const char* start_or_continue = thread_is_paused ? "Continue" : "Start";
-    if (ImGui::Button(start_or_continue)) {
-      if (thread_is_paused) {
-        resume_thread(&computation_thread);
-        thread_is_paused = false;
-      } else {
-        if (!is_thread_running(&computation_thread)) {
-          start_thread(&computation_thread, computation_thread_proc, &thread_data);
-        }
-      }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Pause")) {
-      if (!thread_is_paused && is_thread_running(&computation_thread)) {
-        suspend_thread(&computation_thread);
-        thread_is_paused = true;
-      }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Stop")) {
-      if (is_thread_running(&computation_thread)) {
-        kill_thread(&computation_thread);
-      }
-    }
+    ImGui::Text("Largest cluster size          := %lu",  0);
+    ImGui::Text("Is percolating cluster found  := %s",   false ? "true" : "false");
 
     auto framerate = io.Framerate;
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
@@ -2257,31 +1747,10 @@ void update_and_render(GLFWwindow* window) {
   ImGui::Render();
   glViewport(0, 0, width, height);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#endif
 
+  // draw_triangle();
 
-  draw_grid();
-  //draw_circles<DIM>(&thread_data);
-
-  Matrix4x4 projection = box_to_box_matrix(min, max, visual_ui_min, visual_ui_max);
-
-  Basic_Shader_Data* data = (Basic_Shader_Data*)basic_shader.data;
-  data->mvp = (float*) &projection;
-
-  bind_shader(basic_shader);
-
-
-  if (show_visual_ui) {
-
-    if (show_visual_line) {
-      draw_call(GL_LINES, line);
-    }
-
-    if (show_visual_grid) {
-      draw_call(GL_LINES, batched_quads);
-    }
-
-    if (show_visual_spheres) {
-      draw_call(GL_LINES, batched_circles);
-    }
-  }
+  // //draw_circles<DIM>(&thread_data);
+  draw_circles();
 }

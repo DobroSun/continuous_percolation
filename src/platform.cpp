@@ -30,11 +30,6 @@
 #include "../../../imgui/backends/imgui_impl_opengl3.cpp"
 #define GL_VERSION_1_1 // @Hack: end.
 
-#include "filesystem_api.cpp"
-#include "filesystem_windows.cpp"
-#include "threads_api.cpp"
-#include "threads_windows.cpp"
-#include "dynamic_array.cpp"
 #include "main.cpp"
 
 #pragma comment(lib, "Dependencies\\GLEW\\lib\\Release\\x64\\glew32s.lib")
@@ -78,7 +73,7 @@ int main(int, char**)
 #endif
 
     // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(1280, 1280, "Dear ImGui GLFW+OpenGL3 example", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(800, 800, "Dear ImGui GLFW+OpenGL3 example", NULL, NULL);
     if (window == NULL)
         return 1;
     glfwMakeContextCurrent(window);
